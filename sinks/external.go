@@ -21,17 +21,25 @@ import (
 	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api"
 	"github.com/GoogleCloudPlatform/heapster/sinks/gcm"
 	"github.com/GoogleCloudPlatform/heapster/sinks/influxdb"
+	"github.com/GoogleCloudPlatform/heapster/sinks/rrdcached"
 	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
 )
 
 var (
-	argSink = flag.String("sink", "memory", "Backend storage. Options are [memory | influxdb | bigquery | gcm ]")
+	argSink = flag.String("sink", "memory", "Backend storage. Options are [memory | influxdb | rrdcached | bigquery | gcm ]")
 	// TODO: Take in auth via some other secure mechanism.
+
+	// influxdb
 	argDbUsername   = flag.String("sink_influxdb_username", "root", "InfluxDB username")
 	argDbPassword   = flag.String("sink_influxdb_password", "root", "InfluxDB password")
 	argDbHost       = flag.String("sink_influxdb_host", "localhost:8086", "InfluxDB host:port")
 	argDbName       = flag.String("sink_influxdb_name", "k8s", "Influxdb database name")
 	argAvoidColumns = flag.Bool("sink_influxdb_no_columns", false, "When true, prefixes metric series names with metadata instead of storing metadata in additional columns. Metadata includes hostname, container name, etc. ")
+
+	// rrdcached
+	argRrdHost   = flag.String("sink_rrdcached_host", "localhost:50060", "RRDCacheD host:port")
+	argRrdDir    = flag.String("sink_rrdcached_rrd_dir", "/tmp/rrds", "RRDCacheD RRD directory")
+	argRemapKeys = flag.String("sink_rrdcached_remap_keys", "", "Comma-separated key remappings. Remap to empty to omit a metric. eg 'network/rx=network_rx,network/rx_errors='.")
 )
 
 type externalSinkManager struct {
@@ -129,6 +137,16 @@ func NewSink() (ExternalSinkManager, error) {
 		}
 
 		externalSink, err := influxdb.NewSink(*argDbHost, *argDbUsername, *argDbPassword, *argDbName, *argAvoidColumns)
+		if err != nil {
+			return nil, err
+		}
+		return newExternalSinkManager([]sink_api.ExternalSink{externalSink})
+	case "rrdcached":
+		if *argRrdHost == "" {
+			return nil, fmt.Errorf("flag '-sink_rrdcached_host' invalid")
+		}
+
+		externalSink, err := rrdcached.NewSink(*argRrdHost, *argRrdDir, *argRemapKeys)
 		if err != nil {
 			return nil, err
 		}
