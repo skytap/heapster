@@ -199,6 +199,10 @@
 			"Rev": "3f831b65b61282ba6bece21b91beea2edc4c887a"
 		},
 		{
+			"ImportPath": "github.com/skytap/go-rrdcached",
+			"Rev": "4245ff145997d71a13772b58fb91a7ef142f8526"
+		},
+		{
 			"ImportPath": "github.com/spf13/pflag",
 			"Rev": "f82776d6cc998e3c026baef7b24409ff49fe5c8d"
 		},
