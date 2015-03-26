@@ -20,10 +20,10 @@ package datasource
 import (
 	"fmt"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
 	"github.com/golang/glog"
 	cadvisorClient "github.com/google/cadvisor/client"
 	cadvisor "github.com/google/cadvisor/info/v1"
+	"github.com/skytap/heapster/sources/api"
 )
 
 type cadvisorSource struct{}

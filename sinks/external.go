@@ -18,11 +18,11 @@ import (
 	"flag"
 	"fmt"
 
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api"
-	"github.com/GoogleCloudPlatform/heapster/sinks/gcm"
-	"github.com/GoogleCloudPlatform/heapster/sinks/influxdb"
-	"github.com/GoogleCloudPlatform/heapster/sinks/rrdcached"
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
+	sink_api "github.com/skytap/heapster/sinks/api"
+	"github.com/skytap/heapster/sinks/gcm"
+	"github.com/skytap/heapster/sinks/influxdb"
+	"github.com/skytap/heapster/sinks/rrdcached"
+	source_api "github.com/skytap/heapster/sources/api"
 )
 
 var (

@@ -15,7 +15,7 @@
 package sources
 
 import (
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
+	"github.com/skytap/heapster/sources/nodes"
 )
 
 type fakeNodesApi struct {

@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"github.com/GoogleCloudPlatform/gcloud-golang/compute/metadata"
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api"
 	"github.com/golang/glog"
+	sink_api "github.com/skytap/heapster/sinks/api"
 )
 
 type gcmSink struct {

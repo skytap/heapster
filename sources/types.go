@@ -17,7 +17,7 @@ package sources
 import (
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
+	"github.com/skytap/heapster/sources/api"
 )
 
 type Source interface {

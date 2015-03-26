@@ -22,11 +22,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	kube_client "github.com/GoogleCloudPlatform/kubernetes/pkg/client"
 	"github.com/golang/glog"
+	"github.com/skytap/heapster/sources/api"
+	"github.com/skytap/heapster/sources/datasource"
+	"github.com/skytap/heapster/sources/nodes"
 )
 
 const (

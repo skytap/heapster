@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api"
 	"github.com/golang/glog"
 	influxdb "github.com/influxdb/influxdb/client"
+	sink_api "github.com/skytap/heapster/sinks/api"
 )
 
 type influxdbSink struct {

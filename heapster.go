@@ -23,11 +23,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sinks"
-	"github.com/GoogleCloudPlatform/heapster/sources"
-	"github.com/GoogleCloudPlatform/heapster/validate"
-	"github.com/GoogleCloudPlatform/heapster/version"
 	"github.com/golang/glog"
+	"github.com/skytap/heapster/sinks"
+	"github.com/skytap/heapster/sources"
+	"github.com/skytap/heapster/validate"
+	"github.com/skytap/heapster/version"
 )
 
 var (

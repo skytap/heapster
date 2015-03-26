@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
+	"github.com/skytap/heapster/sources/api"
+	"github.com/skytap/heapster/sources/datasource"
+	"github.com/skytap/heapster/sources/nodes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -17,8 +17,8 @@ package api
 import (
 	"time"
 
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
 	cadvisor "github.com/google/cadvisor/info/v1"
+	source_api "github.com/skytap/heapster/sources/api"
 )
 
 type MetricType int

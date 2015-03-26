@@ -17,7 +17,7 @@ package api
 import (
 	"time"
 
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
+	source_api "github.com/skytap/heapster/sources/api"
 )
 
 type defaultDecoder struct {

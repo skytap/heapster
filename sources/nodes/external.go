@@ -21,8 +21,8 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
 	"github.com/golang/glog"
+	"github.com/skytap/heapster/sources/api"
 )
 
 // Provides a list of external cadvisor nodes to monitor.

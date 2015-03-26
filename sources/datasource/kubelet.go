@@ -25,9 +25,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
 	"github.com/golang/glog"
 	cadvisor "github.com/google/cadvisor/info/v1"
+	"github.com/skytap/heapster/sources/api"
 )
 
 type kubeletSource struct{}

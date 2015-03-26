@@ -18,14 +18,14 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/client"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/client/cache"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/golang/glog"
+	"github.com/skytap/heapster/sources/api"
+	"github.com/skytap/heapster/sources/nodes"
 )
 
 // podsApi provides an interface to access all the pods that an instance of heapster

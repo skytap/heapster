@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
 	cadvisor "github.com/google/cadvisor/info/v1"
 	"github.com/google/gofuzz"
+	source_api "github.com/skytap/heapster/sources/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

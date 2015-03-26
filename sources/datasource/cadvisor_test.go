@@ -20,10 +20,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 	"github.com/google/cadvisor/client"
 	cadvisor_api "github.com/google/cadvisor/info/v1"
+	"github.com/skytap/heapster/sources/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

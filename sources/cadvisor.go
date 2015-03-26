@@ -25,10 +25,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	"github.com/golang/glog"
+	"github.com/skytap/heapster/sources/api"
+	"github.com/skytap/heapster/sources/datasource"
+	"github.com/skytap/heapster/sources/nodes"
 )
 
 var (

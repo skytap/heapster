@@ -25,18 +25,18 @@ import (
 	"testing"
 	"time"
 
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api"
 	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	kube_api_v1beta1 "github.com/GoogleCloudPlatform/kubernetes/pkg/api/v1beta1"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
 	"github.com/ghodss/yaml"
 	"github.com/golang/glog"
 	influxdb "github.com/influxdb/influxdb/client"
+	sink_api "github.com/skytap/heapster/sinks/api"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	heapsterPackage    = "github.com/GoogleCloudPlatform/heapster"
+	heapsterPackage    = "github.com/skytap/heapster"
 	targetTags         = "kubernetes-minion"
 	maxInfluxdbRetries = 5
 )

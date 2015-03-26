@@ -21,7 +21,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
+	"github.com/skytap/heapster/sources/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

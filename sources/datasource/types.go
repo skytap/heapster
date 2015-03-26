@@ -15,7 +15,7 @@
 package datasource
 
 import (
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
+	"github.com/skytap/heapster/sources/api"
 )
 
 type Host struct {

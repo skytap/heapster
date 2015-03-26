@@ -20,9 +20,9 @@ import (
 	"strconv"
 	"strings"
 
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api"
 	"github.com/golang/glog"
 	rrdcached "github.com/skytap/go-rrdcached"
+	sink_api "github.com/skytap/heapster/sinks/api"
 )
 
 var (
