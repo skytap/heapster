@@ -78,7 +78,7 @@ func (self *rrdcachedSink) Register(metrics []sink_api.MetricDescriptor) error {
 }
 
 func (self *rrdcachedSink) DebugInfo() string {
-	desc := "Sink type: Rrdcached\n"
+	desc := "Sink type: Rrdcached (Skytap)\n"
 	desc += "\tDataset: cadvisor\n\n"
 	desc += fmt.Sprintf("\tclient: Host %q:%d\n", self.host, self.port)
 	desc += fmt.Sprintf("\tstorage: %v\n", self.directory)
@@ -168,7 +168,8 @@ func (self *rrdcachedSink) ensureRRDFileExists(filename string, timestamp int64)
 		if !os.IsNotExist(err) {
 			return err
 		}
-		resp := self.driver.Create(filename, timestamp, -1, false, defineDS, defineRRA)
+		glog.Infof("======= CREATE called here =======")
+		resp := self.driver.Create(filename, timestamp, -1, true, defineDS, defineRRA)
 		if resp.Status != 0 {
 			return fmt.Errorf("RRD CREATE failed: %v, error %v", filename, resp.Raw)
 		}
