@@ -41,13 +41,12 @@ var (
 type rrdcachedSink struct {
 	host       string
 	port       int64
-	directory  string
 	remappings map[string]string
 	driver     *rrdcached.Rrdcached // The driver for RRDCacheD interactions.
 }
 
-func NewSink(hostname string, directory string, remappings string) (sink_api.ExternalSink, error) {
-	glog.Infof("Using rrdcached on host %q with directory %q", hostname, directory)
+func NewSink(hostname string, remappings string) (sink_api.ExternalSink, error) {
+	glog.Infof("Using rrdcached on host %q", hostname)
 
 	host_and_port := strings.Split(hostname, ":")
 	host := host_and_port[0]
@@ -67,7 +66,6 @@ func NewSink(hostname string, directory string, remappings string) (sink_api.Ext
 	return &rrdcachedSink{
 		host:       host,
 		port:       port,
-		directory:  directory,
 		remappings: remappingsMap,
 		driver:     driver,
 	}, nil
@@ -81,7 +79,6 @@ func (self *rrdcachedSink) DebugInfo() string {
 	desc := "Sink type: Rrdcached (Skytap)\n"
 	desc += "\tDataset: cadvisor\n\n"
 	desc += fmt.Sprintf("\tclient: Host %q:%d\n", self.host, self.port)
-	desc += fmt.Sprintf("\tstorage: %v\n", self.directory)
 	desc += fmt.Sprintf("\tkey remappings: %v\n", self.remappings)
 	return desc
 }
@@ -99,7 +96,7 @@ func (self *rrdcachedSink) StoreTimeseries(timeseries []sink_api.Timeseries) err
 			continue
 		}
 
-		basepath := fmt.Sprintf("%v/%v/%v", self.directory, point.Labels["container_name"], point.Labels["hostname"]) // TODO: configurable? how? hmm.
+		rrdpath := fmt.Sprintf("%v/%v", point.Labels["container_name"], point.Labels["hostname"]) // TODO: configurable? how? hmm.
 
 		// remap key to custom name, if provided.
 		key := point.Name
@@ -111,9 +108,9 @@ func (self *rrdcachedSink) StoreTimeseries(timeseries []sink_api.Timeseries) err
 		}
 
 		// construct filename
-		filename := fmt.Sprintf("%v/%v.rrd", basepath, key)
+		filename := fmt.Sprintf("%v/%v.rrd", rrdpath, key)
 
-		if err := self.ensureRRDExists(filename, point.End.Unix()); err != nil {
+		if err := self.ensureRRDFileExists(filename, point.End.Unix()); err != nil {
 			glog.Error(err)
 			continue
 		}
@@ -143,23 +140,6 @@ func debugTimeseriesData(datapoint sink_api.Timeseries) {
 	glog.Infof("          => type: %v", desc.Type.String())
 	glog.Infof("          => value type: %v", desc.ValueType.String())
 	glog.Infof("          => labels: %v", sink_api.LabelsToString(point.Labels, "_"))
-}
-
-func (self *rrdcachedSink) ensureRRDExists(filename string, timestamp int64) error {
-	if err := self.ensureRRDDirectoryExists(filename); err != nil {
-		return err
-	}
-	if err := self.ensureRRDFileExists(filename, timestamp); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (self *rrdcachedSink) ensureRRDDirectoryExists(filename string) error {
-	// keys contain slash by default, eg "network/rx", so build full file path then mkdir as needed.
-	lastSlashPos := strings.LastIndex(filename, "/")
-	fileDir := filename[:lastSlashPos]
-	return os.MkdirAll(fileDir, 0755)
 }
 
 func (self *rrdcachedSink) ensureRRDFileExists(filename string, timestamp int64) error {
