@@ -38,7 +38,6 @@ var (
 
 	// rrdcached
 	argRrdHost   = flag.String("sink_rrdcached_host", "localhost:50060", "RRDCacheD host:port")
-	argRrdDir    = flag.String("sink_rrdcached_rrd_dir", "/tmp/rrds", "RRDCacheD RRD directory")
 	argRemapKeys = flag.String("sink_rrdcached_remap_keys", "", "Comma-separated key remappings. Remap to empty to omit a metric. eg 'network/rx=network_rx,network/rx_errors='.")
 )
 
@@ -146,7 +145,7 @@ func NewSink() (ExternalSinkManager, error) {
 			return nil, fmt.Errorf("flag '-sink_rrdcached_host' invalid")
 		}
 
-		externalSink, err := rrdcached.NewSink(*argRrdHost, *argRrdDir, *argRemapKeys)
+		externalSink, err := rrdcached.NewSink(*argRrdHost, *argRemapKeys)
 		if err != nil {
 			return nil, err
 		}
