@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +37,6 @@ const (
 	kTestZone        = "us-central1-b"
 	targetTags       = "kubernetes-minion"
 	heapsterBuildDir = "../deploy/docker"
-	makefile         = "../Makefile"
 )
 
 var (
@@ -51,14 +50,15 @@ var (
 	runForever             = flag.Bool("run_forever", false, "If true, the tests are run in a loop forever.")
 )
 
-func deleteAll(fm kubeFramework, ns string, service *kube_api.Service, rc *kube_api.ReplicationController) {
+func deleteAll(fm kubeFramework, ns string, service *kube_api.Service, rc *kube_api.ReplicationController) error {
 	if err := fm.DeleteRC(ns, rc); err != nil {
-		glog.Error(err)
+		return err
 	}
 
 	if err := fm.DeleteService(ns, service); err != nil {
-		glog.Error(err)
+		return err
 	}
+	return nil
 }
 
 func createAll(fm kubeFramework, ns string, service **kube_api.Service, rc **kube_api.ReplicationController) error {
@@ -97,9 +97,6 @@ func buildAndPushHeapsterImage(hostnames []string) error {
 		return err
 	}
 	if err := os.Chdir(heapsterBuildDir); err != nil {
-		return err
-	}
-	if err := make("build", path.Join(curwd, makefile)); err != nil {
 		return err
 	}
 	if err := buildDockerImage(*heapsterImage); err != nil {
@@ -151,6 +148,7 @@ func buildAndPushDockerImages(fm kubeFramework) error {
 const (
 	metricsEndpoint       = "/api/v1/metric-export"
 	metricsSchemaEndpoint = "/api/v1/metric-export-schema"
+	sinksEndpoint         = "/api/v1/sinks"
 )
 
 func getTimeseries(fm kubeFramework, svc *kube_api.Service) ([]*heapster_api.Timeseries, error) {
@@ -308,6 +306,63 @@ func expectedItemsExist(expectedItems []string, actualItems map[string]bool) boo
 	return true
 }
 
+func getSinks(fm kubeFramework, svc *kube_api.Service) ([]string, error) {
+	body, err := fm.Client().Get().
+		Namespace(svc.Namespace).
+		Prefix("proxy").
+		Resource("services").
+		Name(svc.Name).
+		Suffix(sinksEndpoint).
+		Do().Raw()
+	if err != nil {
+		return nil, err
+	}
+	var sinks []string
+	if err := json.Unmarshal(body, &sinks); err != nil {
+		glog.V(2).Infof("response body: %v", string(body))
+		return nil, err
+	}
+	return sinks, nil
+}
+
+func setSinks(fm kubeFramework, svc *kube_api.Service, sinks []string) error {
+	data, err := json.Marshal(sinks)
+	if err != nil {
+		return err
+	}
+	return fm.Client().Post().
+		Namespace(svc.Namespace).
+		Prefix("proxy").
+		Resource("services").
+		Name(svc.Name).
+		Suffix(sinksEndpoint).
+		SetHeader("Content-Type", "application/json").
+		Body(data).
+		Do().Error()
+}
+
+func runSinksTest(fm kubeFramework, svc *kube_api.Service) error {
+	for _, newSinks := range [...][]string{
+		[]string{},
+		//[]string{
+		//	"gcm",
+		//},
+		//[]string{},
+	} {
+		if err := setSinks(fm, svc, newSinks); err != nil {
+			return err
+		}
+		sinks, err := getSinks(fm, svc)
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(sinks, newSinks) {
+			return fmt.Errorf("expected %v sinks, found %v", newSinks, sinks)
+		}
+	}
+	return nil
+}
+
 func apiTest(kubeVersion string) error {
 	fm, err := newKubeFramework(kubeVersion)
 	if err != nil {
@@ -322,14 +377,12 @@ func apiTest(kubeVersion string) error {
 		return err
 	}
 	ns := *namespace
-	deleteAll(fm, ns, svc, rc)
-	if err = createAll(fm, ns, &svc, &rc); err != nil {
+	if err := deleteAll(fm, ns, svc, rc); err != nil {
 		return err
 	}
-	defer func() {
-		//		deleteAll(fm, ns, svc, rc)
-		//	removeHeapsterImage(fm)
-	}()
+	if err := createAll(fm, ns, &svc, &rc); err != nil {
+		return err
+	}
 	if err := fm.WaitUntilPodRunning(ns, rc.Spec.Template.Labels, time.Minute); err != nil {
 		return err
 	}
@@ -344,14 +397,27 @@ func apiTest(kubeVersion string) error {
 	if err != nil {
 		return err
 	}
+	testFuncs := []func() error{
+		func() error {
+			return runHeapsterMetricsTest(fm, svc, expectedNodes, expectedPods)
+		},
+		func() error {
+			return runSinksTest(fm, svc)
+		},
+	}
 	attempts := *maxRetries
 	for {
-		err := runHeapsterMetricsTest(fm, svc, expectedNodes, expectedPods)
+		var err error
+		for _, testFunc := range testFuncs {
+			if err = testFunc(); err != nil {
+				break
+			}
+		}
 		if *runForever {
 			continue
 		}
 		if err == nil {
-			return nil
+			break
 		}
 		if attempts == 0 {
 			return err
@@ -359,6 +425,9 @@ func apiTest(kubeVersion string) error {
 		attempts--
 		time.Sleep(time.Second)
 	}
+	deleteAll(fm, ns, svc, rc)
+	removeHeapsterImage(fm)
+	return nil
 }
 
 func runApiTest() error {
@@ -372,7 +441,9 @@ func runApiTest() error {
 	}
 	kubeVersionsList := strings.Split(*kubeVersions, ",")
 	for _, kubeVersion := range kubeVersionsList {
-		return apiTest(kubeVersion)
+		if err := apiTest(kubeVersion); err != nil {
+			return err
+		}
 	}
 	return nil
 }

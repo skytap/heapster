@@ -15,7 +15,6 @@
 package store
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -58,6 +57,7 @@ func TestCMAInsertTime(t *testing.T) {
 	assert.Error(store.Put(TimePoint{zeroTime, uint64(2)}))
 	assert.Error(store.Put(TimePoint{zeroTime, nil}))
 
+	// Put 2 values
 	assert.NoError(store.Put(TimePoint{now, uint64(2)}))
 	assert.NoError(store.Put(TimePoint{now, uint64(6)}))
 	assert.NoError(store.Put(TimePoint{now.Add(2 * time.Second), uint64(0)}))
@@ -67,7 +67,6 @@ func TestCMAInsertTime(t *testing.T) {
 
 	// Get Invocation with values 2 and 4
 	actual := store.Get(zeroTime, now)
-	fmt.Println(actual)
 	require.Len(t, actual, 1)
 	assert.Equal(actual[0].Value, uint64(4))
 
@@ -96,6 +95,12 @@ func TestCMAInsertTime(t *testing.T) {
 	require.Len(t, actual, 2)
 	assert.Equal(actual[0].Value, uint64(35))
 	assert.Equal(actual[1].Value, uint64(999))
+
+	// Get from a starting value
+	actual = store.Get(now.Add(-time.Hour), zeroTime)
+	require.Len(t, actual, 2)
+	assert.Equal(actual[0].Value, uint64(126))
+	assert.Equal(actual[1].Value, uint64(4))
 }
 
 func TestCMADelete(t *testing.T) {

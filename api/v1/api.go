@@ -59,6 +59,24 @@ func (a *Api) Register(container *restful.Container) {
 		Operation("exportmetricsSchema").
 		Writes(TimeseriesSchema{}))
 	container.Add(ws)
+	ws = new(restful.WebService)
+	ws.Path("/api/v1/sinks").
+		Doc("Configuration for Heapster sinks for exporting data").
+		Produces(restful.MIME_JSON)
+	ws.Route(ws.POST("").
+		To(a.setSinks).
+		Doc("set the current sinks").
+		Operation("setSinks").
+		Reads([]string{}))
+	ws.Route(ws.GET("").
+		To(a.getSinks).
+		Doc("get the current sinks").
+		Operation("getSinks").
+		Writes([]string{}))
+	container.Add(ws)
+
+	// Register the endpoints of the model
+	a.RegisterModel(container)
 }
 
 func compressionFilter(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
@@ -178,4 +196,37 @@ func (a *Api) exportMetrics(request *restful.Request, response *restful.Response
 	}
 
 	response.WriteEntity(timeseries)
+}
+
+func (a *Api) setSinks(req *restful.Request, resp *restful.Response) {
+	sinkUris := new([]string)
+	if err := req.ReadEntity(sinkUris); err != nil {
+		resp.WriteError(http.StatusBadRequest, err)
+		return
+	}
+	var uris manager.Uris
+	for _, s := range *sinkUris {
+		if err := uris.Set(s); err != nil {
+			resp.WriteError(http.StatusBadRequest, err)
+			return
+		}
+	}
+	if err := a.manager.SetSinkUris(uris); err != nil {
+		resp.WriteError(http.StatusInternalServerError, err)
+		return
+	}
+}
+
+func (a *Api) getSinks(req *restful.Request, resp *restful.Response) {
+	sinkUris := a.manager.SinkUris()
+	var strs []string
+	if sinkUris == nil {
+		strs = make([]string, 0)
+	} else {
+		strs = make([]string, 0, len(sinkUris))
+		for _, u := range sinkUris {
+			strs = append(strs, u.String())
+		}
+	}
+	resp.WriteEntity(strs)
 }

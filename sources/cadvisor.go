@@ -20,6 +20,7 @@ package sources
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -49,7 +50,7 @@ func init() {
 	extpoints.SourceFactories.Register(NewCadvisorSources, "cadvisor")
 }
 
-func (self *cadvisorSource) GetInfo(start, end time.Time, resolution time.Duration) (api.AggregateData, error) {
+func (self *cadvisorSource) GetInfo(start, end time.Time, resolution time.Duration, align bool) (api.AggregateData, error) {
 	var (
 		lock sync.Mutex
 		wg   sync.WaitGroup
@@ -68,7 +69,7 @@ func (self *cadvisorSource) GetInfo(start, end time.Time, resolution time.Durati
 				IP:   info.InternalIP,
 				Port: self.cadvisorPort,
 			}
-			rawSubcontainers, node, err := self.cadvisorApi.GetAllContainers(host, start, end, resolution)
+			rawSubcontainers, node, err := self.cadvisorApi.GetAllContainers(host, start, end, resolution, align)
 			if err != nil {
 				glog.Error(err)
 				return
@@ -111,14 +112,15 @@ func (cs *cadvisorSource) Name() string {
 	return "Cadvisor Source"
 }
 
-func NewCadvisorSources(cadvisorType string, options map[string][]string) ([]api.Source, error) {
-	if cadvisorType == "coreos" || cadvisorType == "fleet" {
-		return newCoreosSources(options)
+func NewCadvisorSources(uri *url.URL) ([]api.Source, error) {
+	switch uri.Path {
+	case "coreos", "fleet":
+		return newCoreosSources(uri.Query())
+	case "external":
+		return newExternalSources(uri.Query())
+	default:
+		return nil, fmt.Errorf("Unknown cadvisor source: %s", uri.Path)
 	}
-	if cadvisorType == "external" {
-		return newExternalSources(options)
-	}
-	return nil, fmt.Errorf("Unknown cadvisor source: %s", cadvisorType)
 }
 
 func newExternalSources(options map[string][]string) ([]api.Source, error) {

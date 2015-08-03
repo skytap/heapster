@@ -12,35 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package manager
 
 import (
 	"fmt"
-	"net/url"
 
 	"github.com/GoogleCloudPlatform/heapster/extpoints"
 	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
 )
 
-func newSinks() ([]sink_api.ExternalSink, error) {
+func newSinks(sinkUris Uris) ([]sink_api.ExternalSink, error) {
 	var sinks []sink_api.ExternalSink
-	for _, sinkFlag := range argSinks {
-		uri, err := url.Parse(sinkFlag)
-		if err != nil {
-			return nil, err
-		}
-		if (uri.Scheme == "" || uri.Opaque == "") && uri.Path == "" {
-			return nil, fmt.Errorf("Invalid sink definition: %s", sinkFlag)
-		}
-		key := uri.Scheme
-		if key == "" {
-			key = uri.Path
-		}
-		factory := extpoints.SinkFactories.Lookup(key)
+	for _, u := range sinkUris {
+		factory := extpoints.SinkFactories.Lookup(u.Key)
 		if factory == nil {
-			return nil, fmt.Errorf("Unknown sink: %s", key)
+			return nil, fmt.Errorf("Unknown sink: %s", u.Key)
 		}
-		createdSinks, err := factory(uri.Opaque, uri.Query())
+		createdSinks, err := factory(&u.Val)
 		if err != nil {
 			return nil, err
 		}

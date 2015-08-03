@@ -26,7 +26,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/heapster/manager"
 	"github.com/GoogleCloudPlatform/heapster/sinks"
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
+	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
 	"github.com/GoogleCloudPlatform/heapster/version"
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 	"github.com/golang/glog"
@@ -35,12 +35,15 @@ import (
 var (
 	argPollDuration    = flag.Duration("poll_duration", 10*time.Second, "The frequency at which heapster will poll for stats")
 	argStatsResolution = flag.Duration("stats_resolution", 5*time.Second, "The resolution at which heapster will retain stats. Acceptable values are in the range [1 second, 'poll_duration')")
+	argAlignStats      = flag.Bool("align_stats", false, "Whether to align timestamps of metrics to multiplicity of 'stats_resolution'")
+	argCacheDuration   = flag.Duration("cache_duration", 10*time.Minute, "The total duration of the historical data that will be cached by heapster.")
+	argUseModel        = flag.Bool("use_model", false, "When true, the internal model representation will be used")
+	argModelResolution = flag.Duration("model_resolution", 2*time.Minute, "The resolution of the timeseries stored in the model. Applies only if use_model is true")
 	argPort            = flag.Int("port", 8082, "port to listen to")
 	argIp              = flag.String("listen_ip", "", "IP to listen on, defaults to all IPs")
-	argMaxProcs        = flag.Int("max_procs", 0, "max number of CPUs that can be used simultaneously. Less than 1 for default (number of cores).")
-	argCacheDuration   = flag.Duration("cache_duration", 10*time.Minute, "The total duration of the historical data that will be cached by heapster.")
-	argSources         Uris
-	argSinks           Uris
+	argMaxProcs        = flag.Int("max_procs", 0, "max number of CPUs that can be used simultaneously. Less than 1 for default (number of cores)")
+	argSources         manager.Uris
+	argSinks           manager.Uris
 )
 
 func main() {
@@ -56,14 +59,12 @@ func main() {
 	}
 	sources, sink, manager, err := doWork()
 	if err != nil {
-		glog.Error(err)
-		os.Exit(1)
+		glog.Fatal(err)
 	}
 	handler := setupHandlers(sources, sink, manager)
 	addr := fmt.Sprintf("%s:%d", *argIp, *argPort)
 	glog.Infof("Starting heapster on port %d", *argPort)
 	glog.Fatal(http.ListenAndServe(addr, handler))
-	os.Exit(0)
 }
 
 func validateFlags() error {
@@ -76,27 +77,38 @@ func validateFlags() error {
 	if *argStatsResolution >= *argPollDuration {
 		return fmt.Errorf("stats resolution '%d' is not less than poll duration '%d'", *argStatsResolution, *argPollDuration)
 	}
+	if *argUseModel && (*argStatsResolution >= *argModelResolution) {
+		return fmt.Errorf("stats resolution '%d' is not less than model resolution '%d'", *argStatsResolution, *argModelResolution)
+	}
 
 	return nil
 }
 
-func doWork() ([]api.Source, sinks.ExternalSinkManager, manager.Manager, error) {
+func doWork() ([]source_api.Source, sinks.ExternalSinkManager, manager.Manager, error) {
 	sources, err := newSources()
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	externalSinks, err := newSinks()
+	sinkManager, err := sinks.NewExternalSinkManager(nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	sinkManager, err := sinks.NewExternalSinkManager(externalSinks)
+	manager, err := manager.NewManager(sources, sinkManager, *argStatsResolution, *argCacheDuration, *argUseModel, *argModelResolution, *argAlignStats)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	manager, err := manager.NewManager(sources, sinkManager, *argStatsResolution, *argCacheDuration)
-	if err != nil {
+	if err := manager.SetSinkUris(argSinks); err != nil {
 		return nil, nil, nil, err
 	}
+
+	// Spawn the Model Housekeeping goroutine even if the model is not enabled.
+	// This will allow the model to be activated/deactivated in runtime.
+	modelDuration := 2 * *argModelResolution
+	if (*argCacheDuration).Nanoseconds() < modelDuration.Nanoseconds() {
+		modelDuration = *argCacheDuration
+	}
+	go util.Until(manager.HousekeepModel, modelDuration, util.NeverStop)
+
 	go util.Until(manager.Housekeep, *argPollDuration, util.NeverStop)
 	return sources, sinkManager, manager, nil
 }

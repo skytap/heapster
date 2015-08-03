@@ -15,6 +15,9 @@
 package gcm
 
 import (
+	"fmt"
+	"net/url"
+
 	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 
 	"github.com/GoogleCloudPlatform/heapster/extpoints"
@@ -34,6 +37,20 @@ func (self gcmSink) Register(metrics []sink_api.MetricDescriptor) error {
 		}
 		if rateMetric, exists := gcmRateMetrics[metric.Name]; exists {
 			if err := self.core.Register(rateMetric.name, rateMetric.description, sink_api.MetricGauge.String(), sink_api.ValueDouble.String(), metric.Labels); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (self gcmSink) Unregister(metrics []sink_api.MetricDescriptor) error {
+	for _, metric := range metrics {
+		if err := self.core.Unregister(metric.Name); err != nil {
+			return err
+		}
+		if rateMetric, exists := gcmRateMetrics[metric.Name]; exists {
+			if err := self.core.Unregister(rateMetric.name); err != nil {
 				return err
 			}
 		}
@@ -87,7 +104,10 @@ func init() {
 	extpoints.SinkFactories.Register(CreateGCMSink, "gcm")
 }
 
-func CreateGCMSink(_ string, _ map[string][]string) ([]sink_api.ExternalSink, error) {
+func CreateGCMSink(uri *url.URL) ([]sink_api.ExternalSink, error) {
+	if *uri != (url.URL{}) {
+		return nil, fmt.Errorf("gcm sinks don't take arguments")
+	}
 	core, err := NewCore()
 	sink := gcmSink{core: core}
 	glog.Infof("created GCM sink")

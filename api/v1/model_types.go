@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package v1
 
-import "fmt"
+import (
+	"time"
+)
 
-type Uris []string
-
-func (s *Uris) String() string {
-	return fmt.Sprintf("%v", *s)
+type MetricPoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Value     uint64    `json:"value"`
 }
 
-func (s *Uris) Set(value string) error {
-	*s = append(*s, value)
-	return nil
+type MetricResult struct {
+	Metrics         []MetricPoint `json:"metrics"`
+	LatestTimestamp time.Time     `json:"latestTimestamp"`
 }

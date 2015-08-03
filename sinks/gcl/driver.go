@@ -51,6 +51,11 @@ func (sink *gclSink) Register(metrics []sink_api.MetricDescriptor) error {
 	return nil
 }
 
+func (sink *gclSink) Unregister(metrics []sink_api.MetricDescriptor) error {
+	// No-op
+	return nil
+}
+
 // Stores metrics into the backend
 func (sink *gclSink) StoreTimeseries(input []sink_api.Timeseries) error {
 	// No-op, Google Cloud Logging (GCL) doesn't store metrics
@@ -279,7 +284,10 @@ func init() {
 	extpoints.SinkFactories.Register(CreateGCLSink, "gcl")
 }
 
-func CreateGCLSink(_ string, _ map[string][]string) ([]sink_api.ExternalSink, error) {
+func CreateGCLSink(uri *url.URL) ([]sink_api.ExternalSink, error) {
+	if *uri != (url.URL{}) {
+		return nil, fmt.Errorf("gcl sinks don't take arguments")
+	}
 	sink, err := new()
 	glog.Infof("creating GCL sink")
 	return []sink_api.ExternalSink{sink}, err

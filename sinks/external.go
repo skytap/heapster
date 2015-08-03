@@ -15,8 +15,10 @@
 package sinks
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
+	"sync"
 
 	sink_api_old "github.com/GoogleCloudPlatform/heapster/sinks/api"
 	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
@@ -27,11 +29,10 @@ import (
 type externalSinkManager struct {
 	decoder       sink_api_old.Decoder
 	externalSinks []sink_api.ExternalSink
+	sinkMutex     sync.RWMutex // Protects externalSinks
 }
 
-// NewExternalSinkManager returns an external sink manager that will manage pushing data to all
-// the sinks in 'externalSinks', which is a map of sink name to ExternalSink object.
-func NewExternalSinkManager(externalSinks []sink_api.ExternalSink) (ExternalSinkManager, error) {
+func supportedMetricsDescriptors() []sink_api.MetricDescriptor {
 	// Get supported metrics.
 	supportedMetrics := sink_api.SupportedStatMetrics()
 	for i := range supportedMetrics {
@@ -43,21 +44,23 @@ func NewExternalSinkManager(externalSinks []sink_api.ExternalSink) (ExternalSink
 	for _, supported := range supportedMetrics {
 		descriptors = append(descriptors, supported.MetricDescriptor)
 	}
+	return descriptors
+}
 
-	for _, externalSink := range externalSinks {
-		err := externalSink.Register(descriptors)
-		if err != nil {
+// NewExternalSinkManager returns an external sink manager that will manage pushing data to all
+// the sinks in 'externalSinks', which is a map of sink name to ExternalSink object.
+func NewExternalSinkManager(externalSinks []sink_api.ExternalSink) (ExternalSinkManager, error) {
+	m := &externalSinkManager{
+		decoder: sink_api_old.NewDecoder(),
+	}
+	if externalSinks != nil {
+		if err := m.SetSinks(externalSinks); err != nil {
 			return nil, err
 		}
 	}
-	decoder := sink_api_old.NewDecoder()
-	return &externalSinkManager{
-		externalSinks: externalSinks,
-		decoder:       decoder,
-	}, nil
+	return m, nil
 }
 
-// TODO(vmarmol): Paralellize this.
 func (self *externalSinkManager) Store(input interface{}) error {
 	data, ok := input.(source_api.AggregateData)
 	if !ok {
@@ -69,50 +72,89 @@ func (self *externalSinkManager) Store(input interface{}) error {
 		return err
 	}
 	// Format metrics and push them.
-	errorsChan := make(chan error, len(self.externalSinks))
+	self.sinkMutex.RLock()
+	defer self.sinkMutex.RUnlock()
+	errorsLen := 2 * len(self.externalSinks)
+	errorsChan := make(chan error, errorsLen)
 	for idx := range self.externalSinks {
 		sink := self.externalSinks[idx]
-		go func(sink sink_api.ExternalSink) {
+		go func() {
 			glog.V(2).Infof("Storing Timeseries to %q", sink.Name())
 			errorsChan <- sink.StoreTimeseries(timeseries)
-		}(sink)
-		go func(sink sink_api.ExternalSink) {
+		}()
+		go func() {
 			glog.V(2).Infof("Storing Events to %q", sink.Name())
 			errorsChan <- sink.StoreEvents(data.Events)
-		}(sink)
+		}()
 	}
 	var errors []string
-	for i := 1; i <= len(errorsChan); i++ {
+	for i := 0; i < errorsLen; i++ {
 		if err := <-errorsChan; err != nil {
 			errors = append(errors, fmt.Sprintf("%v ", err))
 		}
 	}
-	err = nil
 	if len(errors) > 0 {
-		err = fmt.Errorf("encountered the following errors: %s", strings.Join(errors, ";\n"))
+		return fmt.Errorf("encountered the following errors: %s", strings.Join(errors, ";\n"))
 	}
-
-	return err
+	return nil
 }
 
 func (self *externalSinkManager) DebugInfo() string {
-	desc := "External Sinks\n"
+	b := &bytes.Buffer{}
+	fmt.Fprintln(b, "External Sinks")
 
 	// Add metrics being exported.
-	desc += "\tExported metrics:\n"
+	fmt.Fprintln(b, "\tExported metrics:")
 	for _, supported := range sink_api.SupportedStatMetrics() {
-		desc += fmt.Sprintf("\t\t%s: %s", supported.Name, supported.Description)
+		fmt.Fprintf(b, "\t\t%s: %s\n", supported.Name, supported.Description)
 	}
 
 	// Add labels being used.
-	desc += "\n\tExported labels:\n"
+	fmt.Fprintln(b, "\tExported labels:")
 	for _, label := range sink_api.SupportedLabels() {
-		desc += fmt.Sprintf("\t\t%s: %s", label.Key, label.Description)
+		fmt.Fprintf(b, "\t\t%s: %s\n", label.Key, label.Description)
 	}
-	desc += "\n\tExternal Sinks:\n"
+	fmt.Fprintln(b, "\tExternal Sinks:")
+	self.sinkMutex.RLock()
+	defer self.sinkMutex.RUnlock()
 	for _, externalSink := range self.externalSinks {
-		desc += fmt.Sprintf("\n\t\t%s", externalSink.DebugInfo())
+		fmt.Fprintf(b, "\t\t%s\n", externalSink.DebugInfo())
 	}
 
-	return desc
+	return b.String()
+}
+
+// inSlice returns whether an external sink is part of a set (list) of sinks
+func inSlice(sink sink_api.ExternalSink, sinks []sink_api.ExternalSink) bool {
+	for _, s := range sinks {
+		if sink == s {
+			return true
+		}
+	}
+	return false
+}
+
+func (self *externalSinkManager) SetSinks(newSinks []sink_api.ExternalSink) error {
+	self.sinkMutex.Lock()
+	defer self.sinkMutex.Unlock()
+	oldSinks := self.externalSinks
+	descriptors := supportedMetricsDescriptors()
+	for _, sink := range oldSinks {
+		if inSlice(sink, newSinks) {
+			continue
+		}
+		if err := sink.Unregister(descriptors); err != nil {
+			return err
+		}
+	}
+	for _, sink := range newSinks {
+		if inSlice(sink, oldSinks) {
+			continue
+		}
+		if err := sink.Register(descriptors); err != nil {
+			return err
+		}
+	}
+	self.externalSinks = newSinks
+	return nil
 }

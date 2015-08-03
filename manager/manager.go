@@ -19,11 +19,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/glog"
+
+	"github.com/GoogleCloudPlatform/heapster/model"
 	"github.com/GoogleCloudPlatform/heapster/sinks"
 	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
 	"github.com/GoogleCloudPlatform/heapster/sinks/cache"
 	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/golang/glog"
+	"github.com/GoogleCloudPlatform/heapster/store"
 )
 
 // Manager provides an interface to control the core of heapster.
@@ -33,16 +36,31 @@ type Manager interface {
 	// stores the data to all the configured sinks.
 	Housekeep()
 
+	// HousekeepModel performs housekeeping for the Model entity
+	HousekeepModel()
+
 	// Export the latest data point of all metrics.
 	ExportMetrics() ([]*sink_api.Point, error)
+
+	// Set the sinks to use
+	SetSinkUris(Uris) error
+
+	// Get the sinks currently in use
+	SinkUris() Uris
+
+	// Get a reference to the cluster entity of the model, if it exists.
+	GetCluster() model.Cluster
 }
 
 type realManager struct {
 	sources     []source_api.Source
 	cache       cache.Cache
+	model       model.Cluster
 	sinkManager sinks.ExternalSinkManager
+	sinkUris    Uris
 	lastSync    time.Time
 	resolution  time.Duration
+	align       bool
 	decoder     sink_api.Decoder
 }
 
@@ -51,28 +69,56 @@ type syncData struct {
 	mutex sync.Mutex
 }
 
-func NewManager(sources []source_api.Source, sinkManager sinks.ExternalSinkManager, res, bufferDuration time.Duration) (Manager, error) {
+func NewManager(sources []source_api.Source, sinkManager sinks.ExternalSinkManager, res, bufferDuration time.Duration, useModel bool, modelRes time.Duration, align bool) (Manager, error) {
+	// TimeStore constructor passed to the cluster implementation.
+	tsConstructor := func() store.TimeStore {
+		// TODO(afein): determine default analogy of cache duration to Timestore durations.
+		return store.NewGCStore(store.NewCMAStore(), 5*bufferDuration)
+	}
+	var newCluster model.Cluster = nil
+	if useModel {
+		newCluster = model.NewCluster(tsConstructor, modelRes)
+	}
+	firstSync := time.Now()
+	if align {
+		firstSync = firstSync.Truncate(res).Add(res)
+	}
 	return &realManager{
 		sources:     sources,
 		sinkManager: sinkManager,
 		cache:       cache.NewCache(bufferDuration),
-		lastSync:    time.Now(),
+		model:       newCluster,
+		lastSync:    firstSync,
 		resolution:  res,
+		align:       align,
 		decoder:     sink_api.NewDecoder(),
 	}, nil
 }
 
+func (rm *realManager) GetCluster() model.Cluster {
+	return rm.model
+}
+
 func (rm *realManager) scrapeSource(s source_api.Source, start, end time.Time, sd *syncData, errChan chan<- error) {
 	glog.V(2).Infof("attempting to get data from source %q", s.Name())
-	data, err := s.GetInfo(start, end, rm.resolution)
+	data, err := s.GetInfo(start, end, rm.resolution, rm.align)
 	if err != nil {
-		err = fmt.Errorf("failed to get information from source %q - %v", s.Name(), err)
-	} else {
-		sd.mutex.Lock()
-		defer sd.mutex.Unlock()
-		sd.data.Merge(&data)
+		errChan <- fmt.Errorf("failed to get information from source %q - %v", s.Name(), err)
+		return
 	}
-	errChan <- err
+	sd.mutex.Lock()
+	defer sd.mutex.Unlock()
+	sd.data.Merge(&data)
+	errChan <- nil
+}
+
+// HousekeepModel periodically populates the manager model from the manager cache.
+func (rm *realManager) HousekeepModel() {
+	if rm.model != nil {
+		if err := rm.model.Update(rm.cache); err != nil {
+			glog.V(1).Infof("Model housekeeping returned error: %s", err.Error())
+		}
+	}
 }
 
 func (rm *realManager) Housekeep() {
@@ -80,8 +126,14 @@ func (rm *realManager) Housekeep() {
 	var sd syncData
 	start := rm.lastSync
 	end := time.Now()
-	rm.lastSync = start
-	glog.V(2).Infof("starting to scrape data from sources")
+	if rm.align {
+		end = end.Truncate(rm.resolution)
+		if start.After(end) {
+			return
+		}
+	}
+	rm.lastSync = end
+	glog.V(2).Infof("starting to scrape data from sources start:%v end:%v", start, end)
 	for idx := range rm.sources {
 		s := rm.sources[idx]
 		go rm.scrapeSource(s, start, end, &sd, errChan)
@@ -105,6 +157,7 @@ func (rm *realManager) Housekeep() {
 	if err := rm.sinkManager.Store(sd.data); err != nil {
 		errors = append(errors, err.Error())
 	}
+
 	if len(errors) > 0 {
 		glog.V(1).Infof("housekeeping resulted in following errors: %v", errors)
 	}
@@ -168,6 +221,22 @@ func trimStatsForContainers(containers []*cache.ContainerElement) []*cache.Conta
 // Only keep the latest stats data point.
 func onlyKeepLatestStat(cont *cache.ContainerElement) {
 	if len(cont.Metrics) > 1 {
-		cont.Metrics = cont.Metrics[len(cont.Metrics)-1:]
+		cont.Metrics = cont.Metrics[0:1]
 	}
+}
+
+func (rm *realManager) SetSinkUris(sinkUris Uris) error {
+	sinks, err := newSinks(sinkUris)
+	if err != nil {
+		return err
+	}
+	if err := rm.sinkManager.SetSinks(sinks); err != nil {
+		return err
+	}
+	rm.sinkUris = sinkUris
+	return nil
+}
+
+func (rm *realManager) SinkUris() Uris {
+	return rm.sinkUris
 }

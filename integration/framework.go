@@ -20,12 +20,12 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/v1beta3"
+	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/v1"
 	kclient "github.com/GoogleCloudPlatform/kubernetes/pkg/client"
 	kclientcmd "github.com/GoogleCloudPlatform/kubernetes/pkg/client/clientcmd"
 	kclientcmdapi "github.com/GoogleCloudPlatform/kubernetes/pkg/client/clientcmd/api"
@@ -108,7 +108,7 @@ func exists(path string) bool {
 const pathToGCEConfig = "cluster/gce/config-default.sh"
 
 func disableClusterMonitoring(kubeBaseDir string) error {
-	kubeConfigFilePath := path.Join(kubeBaseDir, pathToGCEConfig)
+	kubeConfigFilePath := filepath.Join(kubeBaseDir, pathToGCEConfig)
 	input, err := ioutil.ReadFile(kubeConfigFilePath)
 	if err != nil {
 		return err
@@ -128,7 +128,7 @@ func disableClusterMonitoring(kubeBaseDir string) error {
 }
 
 func runKubeClusterCommand(kubeBaseDir, command string) ([]byte, error) {
-	cmd := exec.Command(path.Join(kubeBaseDir, "cluster", command))
+	cmd := exec.Command(filepath.Join(kubeBaseDir, "cluster", command))
 	glog.V(2).Infof("about to run %v", cmd)
 	return cmd.CombinedOutput()
 }
@@ -162,7 +162,7 @@ func destroyCluster(kubeBaseDir string) error {
 
 func downloadRelease(workDir, version string) error {
 	// Temporary download path.
-	downloadPath := path.Join(workDir, "kube")
+	downloadPath := filepath.Join(workDir, "kube")
 	// Format url.
 	downloadUrl := fmt.Sprintf(imageUrlTemplate, version)
 	glog.V(1).Infof("About to download kube release using url: %q", downloadUrl)
@@ -188,7 +188,7 @@ func getKubeClient() (string, *kclient.Client, error) {
 		*c,
 		&kclientcmd.ConfigOverrides{
 			ClusterInfo: kclientcmdapi.Cluster{
-				APIVersion: "v1beta3",
+				APIVersion: "v1",
 			},
 		}).ClientConfig()
 	if err != nil {
@@ -230,7 +230,7 @@ func requireNewCluster(baseDir, version string) bool {
 
 func downloadAndSetupCluster(version string) (baseDir string, err error) {
 	// Create a temp dir to store the kube release files.
-	tempDir := path.Join(*workDir, version)
+	tempDir := filepath.Join(*workDir, version)
 	if !exists(tempDir) {
 		if err := os.MkdirAll(tempDir, 0700); err != nil {
 			return "", fmt.Errorf("failed to create a temp dir at %s - %q", tempDir, err)
@@ -238,7 +238,7 @@ func downloadAndSetupCluster(version string) (baseDir string, err error) {
 		glog.V(1).Infof("Successfully setup work dir at %s", tempDir)
 	}
 
-	kubeBaseDir := path.Join(tempDir, "kubernetes")
+	kubeBaseDir := filepath.Join(tempDir, "kubernetes")
 
 	if !exists(kubeBaseDir) {
 		if err := downloadRelease(tempDir, version); err != nil {
@@ -317,7 +317,7 @@ func (self *realKubeFramework) loadObject(filePath string) (runtime.Object, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to read object: %v", err)
 	}
-	return v1beta3.Codec.Decode(data)
+	return v1.Codec.Decode(data)
 }
 
 func (self *realKubeFramework) ParseRC(filePath string) (*api.ReplicationController, error) {
@@ -346,13 +346,14 @@ func (self *realKubeFramework) ParseService(filePath string) (*api.Service, erro
 }
 
 func (self *realKubeFramework) CreateService(ns string, service *api.Service) (*api.Service, error) {
+	service.Namespace = ns
 	newSvc, err := self.kubeClient.Services(ns).Create(service)
 	return newSvc, err
 }
 
 func (self *realKubeFramework) DeleteService(ns string, service *api.Service) error {
 	if _, err := self.kubeClient.Services(ns).Get(service.Name); err != nil {
-		glog.V(2).Infof("cannot find service %q - %v", service.Name, err)
+		glog.V(2).Infof("cannot find service %q. Skipping deletion.", service.Name)
 		return nil
 	}
 
@@ -360,21 +361,43 @@ func (self *realKubeFramework) DeleteService(ns string, service *api.Service) er
 }
 
 func (self *realKubeFramework) CreateRC(ns string, rc *api.ReplicationController) (*api.ReplicationController, error) {
+	rc.Namespace = ns
 	return self.kubeClient.ReplicationControllers(ns).Create(rc)
 }
 
 func (self *realKubeFramework) DeleteRC(ns string, inputRc *api.ReplicationController) error {
-	rc, err := self.kubeClient.ReplicationControllers(ns).Get(inputRc.Name)
-	if err != nil {
-		glog.V(2).Infof("Cannot find Replication Controller %q. Skipping deletion - %v", inputRc.Name, err)
+	var list []*api.ReplicationController
+	labelValue := "heapster"
+	labelKeys := []string{"k8s-app", "name"}
+	for _, k := range labelKeys {
+		if val, e := inputRc.Labels[k]; e {
+			labelValue = val
+		}
+	}
+	for _, labelKey := range labelKeys {
+		selector := labels.Set(map[string]string{
+			labelKey: labelValue,
+		}).AsSelector()
+		rcList, err := self.kubeClient.ReplicationControllers(ns).List(selector)
+		if err != nil {
+			return fmt.Errorf("cannot list RCs by label %s=%s: %v", labelKey, labelValue, err)
+		}
+		for i := range rcList.Items {
+			list = append(list, &rcList.Items[i])
+		}
+	}
+	if len(list) < 1 {
+		glog.V(2).Infof("Found no RCs identified by '%s'. Skipping deletion.", labelValue)
 		return nil
 	}
-	rc.Spec.Replicas = 0
-	if _, err := self.kubeClient.ReplicationControllers(ns).Update(rc); err != nil {
-		return fmt.Errorf("unable to modify replica count for rc %v: %v", inputRc.Name, err)
-	}
-	if err := self.kubeClient.ReplicationControllers(ns).Delete(rc.Name); err != nil {
-		return fmt.Errorf("unable to delete rc %v: %v", inputRc.Name, err)
+	for _, rc := range list {
+		rc.Spec.Replicas = 0
+		if _, err := self.kubeClient.ReplicationControllers(ns).Update(rc); err != nil {
+			return fmt.Errorf("unable to modify replica count for rc %v: %v", inputRc.Name, err)
+		}
+		if err := self.kubeClient.ReplicationControllers(ns).Delete(rc.Name); err != nil {
+			return fmt.Errorf("unable to delete rc %v: %v", inputRc.Name, err)
+		}
 	}
 
 	return nil

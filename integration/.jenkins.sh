@@ -1,5 +1,6 @@
 #!/bin/bash
-set -x
+
+set -e -x
 
 export GOPATH="$JENKINS_HOME/workspace/project"
 export GOBIN="$GOPATH/bin"
@@ -10,7 +11,7 @@ if ! git diff --name-only origin/master | grep -c -E "*.go|*.sh|.*yaml" &> /dev/
   exit 0
 fi
 
-SUPPORTED_KUBE_VERSIONS="0.20.0"
+SUPPORTED_KUBE_VERSIONS="1.0.1"
 TEST_NAMESPACE="default"
 
 make test-unit
