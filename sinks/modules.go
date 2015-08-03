@@ -20,4 +20,5 @@ import (
 	_ "github.com/GoogleCloudPlatform/heapster/sinks/gcmautoscaling"
 	_ "github.com/GoogleCloudPlatform/heapster/sinks/hawkular"
 	_ "github.com/GoogleCloudPlatform/heapster/sinks/influxdb"
+	_ "github.com/GoogleCloudPlatform/heapster/sinks/rrdcached"
 )

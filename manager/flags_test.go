@@ -43,6 +43,17 @@ func TestUriString(t *testing.T) {
 			},
 			"influxdb:http://monitoring-influxdb:8086?key=val&key2=val2",
 		},
+		{
+			Uri{
+				Key: "rrdcached",
+				Val: url.URL{
+					Scheme:   "",
+					Host:     "monitoring-rrdcached:8086",
+					RawQuery: "key=val&key2=val2",
+				},
+			},
+			"rrdcached://monitoring-rrdcached:8086?key=val&key2=val2",
+		},
 	}
 	for _, c := range tests {
 		assert.Equal(t, c.want, c.in.String())

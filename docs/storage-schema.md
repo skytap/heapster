@@ -62,6 +62,23 @@ uptime_ms_cumulative
 
 Heapster adds timestamp and sequence number to every metric.
 
+### RRDCached
+
+Metrics mentioned above are stored as distinct RRD files, with additional data built into RRD path to ensure unique naming.
+Metrics are not combined in RRD files to allow them to change over time (add new ones, delete old ones).
+
+The RRD name is constructed according to the following format, omitting any missing data:
+  `{container_name}/{hostname}/{pod_name|pod_id}/{metric}_{unit}_{type}/{resource_id}.rrd`
+
+Data-source type GAUGE is used for "gauge" metrics, and type DERIVE is used for "cumulative" metrics.
+
+If "flattenMetricFiles" is specified, only "container_name" will remain a directory, and all other `/` nesting will become `_` in a single longer RRD filename.
+
+If "ignoreEmptyNamespaces" is specified, only containers with non-default namespaces will be tracked. (This ignores things like "kubelet", "kube-proxy", "docker-daemon", etc.)
+
+Optional "step" and "heartbeat" flags can be used to modify the default step (15s) and heartbeat (60s) used during data-source creation.
+*Note: This raises the scenario of restarting heapster with different values after some RRDs have already been created with old values. Initial support places this responsibility on the user, to delete or recreate old RRDs after changing these values.
+
 ### Google Cloud Monitoring
 
 Metrics mentioned above are stored along with corresponding labels as [custom metrics](https://cloud.google.com/monitoring/custom-metrics/) in Google Cloud Monitoring.
