@@ -36,7 +36,7 @@ type config struct {
 	password      string
 	host          string
 	port          int64
-	flatten       bool
+	baseDir       string
 	ignoreEmptyNS bool
 	step          int64
 	heartbeat     int64
@@ -99,53 +99,83 @@ func debugTimeseriesData(datapoint sink_api.Timeseries) {
 	glog.Infof("          => value type: %v", desc.ValueType.String())
 }
 
-func GetRRDLocation(datapoint sink_api.Timeseries, flatten bool) string {
-	// Generates RRD location of the following format, omitting any missing data:
-	//   {container_name}/{hostname}/{pod_name|pod_id}/{metric}_{unit}_{type}/{resource_id}.rrd
+type PathBuffer struct {
+	bytes.Buffer
+}
+
+func (buffer *PathBuffer) appendDirectory(dir string) {
+	buffer.WriteString(dir)
+	buffer.WriteString("/")
+}
+
+func GetRRDLocation(datapoint sink_api.Timeseries, baseDir string) string {
+	// Generates RRD location of the following format, omitting any missing data.
+	// If 'baseDir' is specified, RRD filenames will be absolute. Otherwise they'll be relative and rrdcached daemon's default base dir will apply.
 	//
-	// If 'flattenMetricFiles' is specified, only 'container_name' will remain a directory,
-	//   and all other '/' nesting will become '_' in a single longer RRD filename.
+	//   {baseDir}/namespace_{namespace}/{container_name}/{hostname}/{pod_name|pod_id}/{metric}_{unit}_{type}/{resource_id}.rrd
 
 	point := datapoint.Point
 	desc := datapoint.MetricDescriptor
 
-	baseDirectory := strings.Replace(point.Labels["container_name"], "/", "_", -1)
+	buffer := &PathBuffer{}
 
-	var buffer bytes.Buffer
-
-	buffer.WriteString(point.Labels["hostname"])
-	if val, ok := point.Labels["pod_name"]; ok && val != "" {
-		if val != "" {
-			buffer.WriteString("/")
-			buffer.WriteString(val)
-		}
-	} else if val, ok := point.Labels["pod_id"]; ok && val != "" {
-		buffer.WriteString("/")
-		buffer.WriteString(val)
+	// Organize by namespace
+	if val, ok := point.Labels["pod_namespace"]; ok && val != "" {
+		buffer.appendDirectory("namespace_" + val)
+	} else {
+		buffer.appendDirectory("namespace_default")
 	}
-	buffer.WriteString("/")
-	buffer.WriteString(point.Name)
+
+	// ... then by container name
+	//   Note: Don't allow container name to start with '/', this is weird mid-filepath. eg "/" and "/docker" containers.
+	containerName := point.Labels["container_name"]
+	if strings.HasPrefix(containerName, "/") {
+		containerName = strings.Replace(containerName, "/", "_", 1)
+	}
+	buffer.appendDirectory(containerName)
+
+	// ... then by hostname
+	if val, ok := point.Labels["hostname"]; ok && val != "" {
+		buffer.appendDirectory(val)
+	} else {
+		buffer.appendDirectory("no_hostname")
+	}
+
+	// ... then by pod name||id
+	if val, ok := point.Labels["pod_name"]; ok && val != "" {
+		buffer.appendDirectory(val)
+	} else if val, ok := point.Labels["pod_id"]; ok && val != "" {
+		buffer.appendDirectory(val)
+	}
+
+	// ... then by '{metric name}_{units}_{resource id}', flattening any '/' to '_'
+	var rrdName bytes.Buffer
+	rrdName.WriteString(point.Name)
 	if val := desc.Units.String(); val != "" {
-		buffer.WriteString("_")
-		buffer.WriteString(val)
+		rrdName.WriteString("_")
+		rrdName.WriteString(val)
 	}
 	if val := desc.Type.String(); val != "" {
-		buffer.WriteString("_")
-		buffer.WriteString(val)
+		rrdName.WriteString("_")
+		rrdName.WriteString(val)
 	}
 	if val, ok := point.Labels["resource_id"]; ok && val != "" {
-		buffer.WriteString("/")
-		buffer.WriteString(strings.Replace(val, "/", "_", -1))
+		rrdName.WriteString("_")
+		rrdName.WriteString(val)
 	}
+
+	// Complete rrd path is now ready, join the pieces and return.
+	buffer.WriteString(strings.Replace(rrdName.String(), "/", "_", -1))
 	buffer.WriteString(".rrd")
 
 	rrdPath := buffer.String()
 
-	if flatten {
-		rrdPath = strings.Replace(rrdPath, "/", "_", -1)
+	// Prepend base directory if specified.
+	if baseDir != "" {
+		rrdPath = baseDir + "/" + rrdPath
 	}
 
-	return baseDirectory + "/" + rrdPath
+	return rrdPath
 }
 
 func (self *rrdcachedSink) StoreTimeseries(timeseries []sink_api.Timeseries) error {
@@ -161,7 +191,7 @@ func (self *rrdcachedSink) StoreTimeseries(timeseries []sink_api.Timeseries) err
 			}
 		}
 
-		filename := GetRRDLocation(timeseries[index], self.c.flatten)
+		filename := GetRRDLocation(timeseries[index], self.c.baseDir)
 
 		if err := self.writeData(filename, desc.Type.String(), point.End.Unix(), point.Value); err != nil {
 			glog.Error(err)
@@ -221,7 +251,7 @@ func (self *rrdcachedSink) DebugInfo() string {
 	desc += "\tDataset: cadvisor\n\n"
 	desc += fmt.Sprintf("\tclient: Host \"%+v:%d\"\n", self.c.host, self.c.port)
 	desc += fmt.Sprintf("\t- step %ds, heartbeat %ds\n", self.c.step, self.c.heartbeat)
-	desc += fmt.Sprintf("\t- flatten metric files? %v\n", self.c.flatten)
+	desc += fmt.Sprintf("\t- base rrd directory? %v\n", self.c.baseDir)
 	desc += fmt.Sprintf("\t- ignore empty namespaces? %v\n", self.c.ignoreEmptyNS)
 	return desc
 }
@@ -254,7 +284,7 @@ func CreateRrdcachedSink(uri *url.URL) ([]sink_api.ExternalSink, error) {
 		user:          "root",
 		password:      "root",
 		host:          "localhost:9010",
-		flatten:       false,
+		baseDir:       "",
 		ignoreEmptyNS: false,
 		step:          15,
 		heartbeat:     60,
@@ -270,12 +300,8 @@ func CreateRrdcachedSink(uri *url.URL) ([]sink_api.ExternalSink, error) {
 	if len(opts["pw"]) >= 1 {
 		defaultConfig.password = opts["pw"][0]
 	}
-	if len(opts["flattenMetricFiles"]) >= 1 {
-		val, err := strconv.ParseBool(opts["flattenMetricFiles"][0])
-		if err != nil {
-			return nil, fmt.Errorf("invalid value %q for option 'flattenMetricFiles' passed to rrdcached sink", opts["flattenMetricFiles"][0])
-		}
-		defaultConfig.flatten = val
+	if len(opts["baseDir"]) >= 1 {
+		defaultConfig.baseDir = opts["baseDir"][0]
 	}
 	if len(opts["ignoreEmptyNamespaces"]) >= 1 {
 		val, err := strconv.ParseBool(opts["ignoreEmptyNamespaces"][0])
