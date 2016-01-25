@@ -10,6 +10,19 @@ Depending on the deployment setup, the issue could be either with heapster, cadv
 
 * Some distros (including Debian) ship with memory accounting disabled by default. To enable memory and swap accounting on the nodes, follow [these instructions](https://docs.docker.com/installation/ubuntulinux/#memory-and-swap-accounting).
 
+#### Time synchronization Problems
+
+* Sometimes, heapster works normally, and the commponts which have interaction with heapster in kubernetes also work well; But there is no metrics and events reported from some nodes. For specific performance:
+
+  + the complete node list can be get from the heapster's RESTApi
+  + the metrics and events about some nodes are empty
+  + the metrics and events about the containers of some nodes are empty
+
+   At the moment, you need to check the timestamp between the nodes. The reason can be found in https://github.com/kubernetes/heapster/issues/802.
+
+* So, we strongly recommend that NTP server need be installed in kubernetes cluster, or some other methods to insure the time synchronization.
+
+
 #### Validate
 
 Heapster exports a '/validate' endpoint that will provide some information about its current state.
@@ -18,7 +31,7 @@ Heapster exports a '/validate' endpoint that will provide some information about
 
 If the '/validate' endpoint does not provide enough information, additional logging can be enabled by setting an extra flag. This requires restarting heapster though.
 Add `--vmodule=*=4` flag to heapster. When using the docker image or when running in kubernetes, pass an extra environment variable `FLAGS="--vmodule=*=4`. 
-If you are running heapster on kubernetes, the environment variable needs to be added to the `env` section in [heapster-controller.yaml](../deploy/kube-config/heapster-controller.yaml)
+If you are running heapster on kubernetes, the environment variable needs to be added to the `env` section in [heapster-controller.yaml](../deploy/kube-config/standalone/heapster-controller.yaml).
 
 ### InfluxDB & Grafana
 

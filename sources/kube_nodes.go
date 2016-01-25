@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	"github.com/golang/glog"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/datasource"
+	"k8s.io/heapster/sources/nodes"
 )
 
 type kubeNodeMetrics struct {
@@ -39,7 +39,10 @@ func NewKubeNodeMetrics(kubeletPort int, kubeletApi datasource.Kubelet, nodesApi
 	}
 }
 
-const rootContainer = "/"
+const (
+	rootContainer             = "/"
+	KubeNodeMetricsSourceName = "Kube Node Metrics Source"
+)
 
 var knownContainers = map[string]string{
 	"/docker-daemon": "docker-daemon",
@@ -49,11 +52,11 @@ var knownContainers = map[string]string{
 }
 
 // Returns the host container, non-Kubernetes containers, and an error (if any).
-func (self *kubeNodeMetrics) updateStats(host nodes.Host, info nodes.Info, start, end time.Time, resolution time.Duration, align bool) (*api.Container, []api.Container, error) {
+func (self *kubeNodeMetrics) updateStats(host nodes.Host, info nodes.Info, start, end time.Time) (*api.Container, []api.Container, error) {
 	// Get information for all containers.
-	containers, err := self.kubeletApi.GetAllRawContainers(datasource.Host{IP: info.InternalIP, Port: self.kubeletPort}, start, end, resolution, align)
+	containers, err := self.kubeletApi.GetAllRawContainers(datasource.Host{IP: info.InternalIP, Port: self.kubeletPort}, start, end)
 	if err != nil {
-		glog.V(3).Infof("Failed to get container stats from Kubelet on node %q", host)
+		glog.Errorf("Failed to get container stats from Kubelet on node %q", host)
 		return nil, []api.Container{}, fmt.Errorf("failed to get container stats from Kubelet on node %q: %v", host, err)
 	}
 	if len(containers) == 0 {
@@ -76,20 +79,22 @@ func (self *kubeNodeMetrics) updateStats(host nodes.Host, info nodes.Info, start
 		containers[i].Hostname = hostString
 		containers[i].ExternalID = externalID
 	}
-	var hostContainer *api.Container = nil
+	var hostContainer *api.Container
 	if hostIndex >= 0 {
 		hostCopy := containers[hostIndex]
 		hostContainer = &hostCopy
 		containers = append(containers[:hostIndex], containers[hostIndex+1:]...)
+		// This is temporary workaround for #399. To make unit consistent with cadvisor normalize to a conversion factor of 1024.
+		hostContainer.Spec.Cpu.Limit = info.CpuCapacity * 1024 / 1000
+		hostContainer.Spec.Memory.Limit = info.MemCapacity
+		return hostContainer, containers, nil
+	} else {
+		return nil, []api.Container{}, fmt.Errorf("Host container not found")
 	}
-	// This is temporary workaround for #399. To make unit consistent with cadvisor normalize to a conversion factor of 1024.
-	hostContainer.Spec.Cpu.Limit = info.CpuCapacity * 1024 / 1000
-	hostContainer.Spec.Memory.Limit = info.MemCapacity
-	return hostContainer, containers, nil
 }
 
 // Returns the host containers, non-Kubernetes containers, and an error (if any).
-func (self *kubeNodeMetrics) getNodesInfo(nodeList *nodes.NodeList, start, end time.Time, resolution time.Duration, align bool) ([]api.Container, []api.Container, error) {
+func (self *kubeNodeMetrics) getNodesInfo(nodeList *nodes.NodeList, start, end time.Time) ([]api.Container, []api.Container, error) {
 	var (
 		lock sync.Mutex
 		wg   sync.WaitGroup
@@ -100,7 +105,7 @@ func (self *kubeNodeMetrics) getNodesInfo(nodeList *nodes.NodeList, start, end t
 		wg.Add(1)
 		go func(host nodes.Host, info nodes.Info) {
 			defer wg.Done()
-			if hostContainer, containers, err := self.updateStats(host, info, start, end, resolution, align); err == nil {
+			if hostContainer, containers, err := self.updateStats(host, info, start, end); err == nil {
 				lock.Lock()
 				defer lock.Unlock()
 				if hostContainers != nil {
@@ -115,13 +120,13 @@ func (self *kubeNodeMetrics) getNodesInfo(nodeList *nodes.NodeList, start, end t
 	return hostContainers, rawContainers, nil
 }
 
-func (self *kubeNodeMetrics) GetInfo(start, end time.Time, resolution time.Duration, align bool) (api.AggregateData, error) {
+func (self *kubeNodeMetrics) GetInfo(start, end time.Time) (api.AggregateData, error) {
 	kubeNodes, err := self.nodesApi.List()
 	if err != nil || len(kubeNodes.Items) == 0 {
 		return api.AggregateData{}, err
 	}
 	glog.V(3).Info("Fetched list of nodes from the master")
-	hostContainers, rawContainers, err := self.getNodesInfo(kubeNodes, start, end, resolution, align)
+	hostContainers, rawContainers, err := self.getNodesInfo(kubeNodes, start, end)
 	if err != nil {
 		return api.AggregateData{}, err
 	}
@@ -140,5 +145,5 @@ func (self *kubeNodeMetrics) DebugInfo() string {
 }
 
 func (kns *kubeNodeMetrics) Name() string {
-	return "Kube Node Metrics Source"
+	return KubeNodeMetricsSourceName
 }

@@ -20,25 +20,38 @@ import (
 	"net/http/pprof"
 	"strings"
 
-	"github.com/GoogleCloudPlatform/heapster/api/v1"
-	"github.com/GoogleCloudPlatform/heapster/manager"
-	"github.com/GoogleCloudPlatform/heapster/sinks"
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/validate"
 	restful "github.com/emicklei/go-restful"
+	"k8s.io/heapster/api/v1"
+	expv2 "k8s.io/heapster/expapi/v2"
+	"k8s.io/heapster/manager"
+	"k8s.io/heapster/sinks"
+	"k8s.io/heapster/sources"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/validate"
 )
 
 const pprofBasePath = "/debug/pprof/"
 
-func setupHandlers(sources []api.Source, sink sinks.ExternalSinkManager, m manager.Manager) http.Handler {
+func setupHandlers(sourcesList []api.Source, sink sinks.ExternalSinkManager, m manager.Manager) http.Handler {
+
+	runningInKubernetes := false
+	for _, source := range sourcesList {
+		if source.Name() == sources.KubePodsSourceName {
+			runningInKubernetes = true
+		}
+	}
+
 	// Make API handler.
 	wsContainer := restful.NewContainer()
-	a := v1.NewApi(m)
+	wsContainer.EnableContentEncoding(true)
+	a := v1.NewApi(m, runningInKubernetes)
 	a.Register(wsContainer)
+	expa := expv2.NewApi(m)
+	expa.Register(wsContainer)
 
 	// Validation/Debug handler.
 	handleValidate := func(req *restful.Request, resp *restful.Response) {
-		err := validate.HandleRequest(resp, sources, sink)
+		err := validate.HandleRequest(resp, sourcesList, sink)
 		if err != nil {
 			fmt.Fprintf(resp, "%s", err)
 		}

@@ -17,8 +17,8 @@ package api
 import (
 	"time"
 
-	kubeapi "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
 	cadvisor "github.com/google/cadvisor/info/v1"
+	kubeapi "k8s.io/kubernetes/pkg/api"
 )
 
 type PodMetadata struct {
@@ -57,18 +57,29 @@ func (a *AggregateData) Merge(b *AggregateData) {
 	a.Events = append(a.Events, b.Events...)
 }
 
+type ContainerSpec struct {
+	// TODO(piosz): Consider defining an internal Spec API to guard against changes to cadvisor API.
+	cadvisor.ContainerSpec
+	CpuRequest    int64
+	MemoryRequest int64
+}
+
+type ContainerStats struct {
+	// TODO(piosz): Consider defining an internal Stats API (see above).
+	cadvisor.ContainerStats
+}
+
 type Container struct {
 	Hostname   string
 	ExternalID string
 	Name       string
-	// TODO(vishh): Consider defining an internal Spec and Stats API to guard against
-	// changes to cadvisor API.
-	Spec  cadvisor.ContainerSpec
-	Stats []*cadvisor.ContainerStats
+	Image      string
+	Spec       ContainerSpec
+	Stats      []*ContainerStats
 }
 
 func NewContainer() *Container {
-	return &Container{Stats: make([]*cadvisor.ContainerStats, 0)}
+	return &Container{Stats: make([]*ContainerStats, 0)}
 }
 
 // An external node represents a host which is running cadvisor. Heapster will expect
@@ -88,11 +99,9 @@ type ExternalNodeList struct {
 type Source interface {
 	// GetInfo Fetches information about pods or containers.
 	// start, end: Represents the time range for stats
-	// resolution: Represents the intervals at which samples are collected.
-	// align: Whether to align timestamps to multiplicity of resolution.
 	// Returns:
 	// AggregateData
-	GetInfo(start, end time.Time, resolution time.Duration, align bool) (AggregateData, error)
+	GetInfo(start, end time.Time) (AggregateData, error)
 	// Returns debug information for the source.
 	DebugInfo() string
 	// Returns a user friendly string that describes the source.

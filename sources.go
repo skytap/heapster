@@ -16,24 +16,32 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
-	"github.com/GoogleCloudPlatform/heapster/extpoints"
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
+	"k8s.io/heapster/extpoints"
+	"k8s.io/heapster/sinks/cache"
+	"k8s.io/heapster/sources/api"
 )
 
-func newSources() ([]api.Source, error) {
+func newSources(c cache.Cache) ([]api.Source, error) {
 	var sources []api.Source
+	var errors []string
 	for _, u := range argSources {
 		factory := extpoints.SourceFactories.Lookup(u.Key)
 		if factory == nil {
 			return nil, fmt.Errorf("Unknown source: %s", u.Key)
 		}
 
-		createdSources, err := factory(&u.Val)
+		createdSources, err := factory(&u.Val, c)
 		if err != nil {
-			return nil, err
+			errors = append(errors, err.Error())
 		}
 		sources = append(sources, createdSources...)
 	}
-	return sources, nil
+	var err error
+	if len(errors) > 0 {
+		err = fmt.Errorf("encountered following errors while setting up sources - %v", strings.Join(errors, "; "))
+	}
+
+	return sources, err
 }

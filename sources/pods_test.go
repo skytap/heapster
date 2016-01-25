@@ -18,20 +18,20 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
-	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/latest"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/api/testapi"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/client"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/runtime"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/heapster/sources/nodes"
+	kube_api "k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/api/latest"
+	"k8s.io/kubernetes/pkg/api/testapi"
+	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/runtime"
+	"k8s.io/kubernetes/pkg/util"
 )
 
 func body(obj runtime.Object) string {
 	if obj != nil {
-		bs, _ := latest.Codec.Encode(obj)
+		bs, _ := latest.GroupOrDie("").Codec.Encode(obj)
 		body := string(bs)
 		return body
 	}
@@ -48,7 +48,7 @@ func TestPodsApiCreation(t *testing.T) {
 	}
 	server := httptest.NewServer(&handler)
 	defer server.Close()
-	client := client.NewOrDie(&client.Config{Host: server.URL, Version: testapi.Version()})
+	client := client.NewOrDie(&client.Config{Host: server.URL, Version: testapi.Default.Version()})
 	podsApi := newPodsApi(client)
 	_, err := podsApi.List(&nodes.NodeList{})
 	require.NoError(t, err)
@@ -75,8 +75,8 @@ func TestPodsParsing(t *testing.T) {
 				Spec: kube_api.PodSpec{
 					NodeName: "test-machine-a",
 					Containers: []kube_api.Container{
-						{Name: "test1"},
-						{Name: "test2"},
+						{Name: "test1", Image: "gcr.io/test1"},
+						{Name: "test2", Image: "gcr.io/test2"},
 					},
 				},
 			},
@@ -98,9 +98,14 @@ func TestPodsParsing(t *testing.T) {
 				Spec: kube_api.PodSpec{
 					NodeName: "test-machine-b",
 					Containers: []kube_api.Container{
-						{Name: "test1"},
-						{Name: "test2"},
+						{Name: "test1", Image: "gcr.io/test1"},
+						{Name: "test2", Image: "gcr.io/test2"},
 					},
+				},
+			},
+			{
+				Status: kube_api.PodStatus{
+					Phase: kube_api.PodFailed,
 				},
 			},
 		},
@@ -113,7 +118,7 @@ func TestPodsParsing(t *testing.T) {
 	}
 	server := httptest.NewServer(&handler)
 	defer server.Close()
-	client := client.NewOrDie(&client.Config{Host: server.URL, Version: testapi.Version()})
+	client := client.NewOrDie(&client.Config{Host: server.URL, Version: testapi.Default.Version()})
 	podsApi := newPodsApi(client)
 	nodeList := &nodes.NodeList{
 		Items: map[nodes.Host]nodes.Info{
@@ -133,6 +138,7 @@ func TestPodsParsing(t *testing.T) {
 		assert.Equal(t, pod.Labels, podList.Items[i].Labels)
 		for idx, container := range pod.Containers {
 			assert.Equal(t, container.Name, podList.Items[i].Spec.Containers[idx].Name)
+			assert.Equal(t, container.Image, podList.Items[i].Spec.Containers[idx].Image)
 		}
 	}
 }

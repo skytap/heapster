@@ -19,16 +19,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
-	kapi "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
-	kclient "github.com/GoogleCloudPlatform/kubernetes/pkg/client"
-	kcache "github.com/GoogleCloudPlatform/kubernetes/pkg/client/cache"
-	kframework "github.com/GoogleCloudPlatform/kubernetes/pkg/controller/framework"
-	kSelector "github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 	"github.com/golang/glog"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/nodes"
+	kapi "k8s.io/kubernetes/pkg/api"
+	kcache "k8s.io/kubernetes/pkg/client/cache"
+	kclient "k8s.io/kubernetes/pkg/client/unversioned"
+	kframework "k8s.io/kubernetes/pkg/controller/framework"
+	kSelector "k8s.io/kubernetes/pkg/fields"
+	"k8s.io/kubernetes/pkg/labels"
+	"k8s.io/kubernetes/pkg/util"
 )
 
 // podsApi provides an interface to access all the pods that an instance of heapster
@@ -82,6 +82,13 @@ func (self *realPodsApi) parsePod(podNodePair *podNodePair) *api.Pod {
 	for _, container := range pod.Spec.Containers {
 		localContainer := api.Container{}
 		localContainer.Name = container.Name
+		localContainer.Image = container.Image
+		if cpu, ok := container.Resources.Requests[kapi.ResourceCPU]; ok {
+			localContainer.Spec.CpuRequest = cpu.MilliValue()
+		}
+		if mem, ok := container.Resources.Requests[kapi.ResourceMemory]; ok {
+			localContainer.Spec.MemoryRequest = mem.Value()
+		}
 		localPod.Containers = append(localPod.Containers, localContainer)
 	}
 	glog.V(5).Infof("parsed kube pod: %+v", localPod)
@@ -118,6 +125,11 @@ func (self *realPodsApi) List(nodeList *nodes.NodeList) ([]api.Pod, error) {
 	selectedPods := []podNodePair{}
 	// TODO(vishh): Avoid this loop by setting a node selector on the watcher.
 	for i, pod := range pods {
+		switch pod.Status.Phase {
+		case kapi.PodSucceeded:
+		case kapi.PodFailed:
+			continue
+		}
 		if nodeInfo, ok := nodeList.Items[nodes.Host(pod.Spec.NodeName)]; ok {
 			nsObj, exists, err := self.namespaceStore.GetByKey(pod.Namespace)
 			if err != nil {
@@ -163,7 +175,7 @@ func newPodsApi(client *kclient.Client) podsApi {
 	lw := kcache.NewListWatchFromClient(client, "pods", kapi.NamespaceAll, selector)
 	podLister := &kcache.StoreToPodLister{Store: kcache.NewStore(kcache.MetaNamespaceKeyFunc)}
 	// Watch and cache all running pods.
-	reflector := kcache.NewReflector(lw, &kapi.Pod{}, podLister.Store, 0)
+	reflector := kcache.NewReflector(lw, &kapi.Pod{}, podLister.Store, time.Hour)
 	stopChan := make(chan struct{})
 	reflector.RunUntil(stopChan)
 	nStore, nController := kframework.NewInformer(

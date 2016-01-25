@@ -21,10 +21,11 @@ import (
 	"strings"
 	"testing"
 
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
-	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
-	kube_time "github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 	"github.com/stretchr/testify/assert"
+	sink_api "k8s.io/heapster/sinks/api"
+	"k8s.io/heapster/util/gce"
+	kube_api "k8s.io/kubernetes/pkg/api"
+	kube_api_unv "k8s.io/kubernetes/pkg/api/unversioned"
 )
 
 type fakeHttpClient struct {
@@ -73,7 +74,7 @@ func NewFakeSink() fakeGCLSink {
 		&gclSink{
 			projectId:  "fakeProjectId",
 			httpClient: fakeHttpClient,
-			token:      "fakeToken",
+			token:      gce.NewFakeAuthTokenProvider("fakeToken"),
 		},
 		fakeHttpClient,
 	}
@@ -106,9 +107,9 @@ func TestStoreEventsEmptyInput(t *testing.T) {
 func TestStoreEventsSingleEventInput(t *testing.T) {
 	// Arrange
 	fakeSink := NewFakeSink()
-	eventTime := kube_time.Unix(12345, 0)
+	eventTime := kube_api_unv.Unix(12345, 0)
 	events := []kube_api.Event{
-		kube_api.Event{
+		{
 			Reason:         "event1",
 			FirstTimestamp: eventTime,
 			LastTimestamp:  eventTime,
@@ -142,10 +143,10 @@ func TestStoreEventsSingleEventInput(t *testing.T) {
 func TestStoreEventsMultipleEventInput(t *testing.T) {
 	// Arrange
 	fakeSink := NewFakeSink()
-	event1Time := kube_time.Unix(12345, 0)
-	event2Time := kube_time.Unix(12366, 0)
+	event1Time := kube_api_unv.Unix(12345, 0)
+	event2Time := kube_api_unv.Unix(12366, 0)
 	events := []kube_api.Event{
-		kube_api.Event{
+		{
 			Reason:         "event1",
 			FirstTimestamp: event1Time,
 			LastTimestamp:  event1Time,
@@ -153,7 +154,7 @@ func TestStoreEventsMultipleEventInput(t *testing.T) {
 				Host: "event1HostName",
 			},
 		},
-		kube_api.Event{
+		{
 			Reason:         "event2",
 			FirstTimestamp: event2Time,
 			LastTimestamp:  event2Time,

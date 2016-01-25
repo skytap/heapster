@@ -20,10 +20,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	"github.com/golang/glog"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/datasource"
+	"k8s.io/heapster/sources/nodes"
 )
 
 type kubePodsSource struct {
@@ -35,7 +35,9 @@ type kubePodsSource struct {
 	podErrors   map[podInstance]int // guarded by stateLock
 }
 
-const name = "kube-pods-source"
+const (
+	KubePodsSourceName = "Kube Pods Source"
+)
 
 func NewKubePodMetrics(kubeletPort int, kubeletApi datasource.Kubelet, nodesApi nodes.NodesApi, podsApi podsApi) api.Source {
 	return &kubePodsSource{
@@ -80,16 +82,16 @@ func (self *kubePodsSource) getState() string {
 	return state
 }
 
-func (self *kubePodsSource) getStatsFromKubelet(pod *api.Pod, containerName string, start, end time.Time, resolution time.Duration, align bool) (*api.Container, error) {
+func (self *kubePodsSource) getStatsFromKubelet(pod *api.Pod, containerName string, start, end time.Time) (*api.Container, error) {
 	resource := filepath.Join("stats", pod.Namespace, pod.Name, pod.ID, containerName)
 	if containerName == "/" {
 		resource += "/"
 	}
 
-	return self.kubeletApi.GetContainer(datasource.Host{IP: pod.HostInternalIP, Port: self.kubeletPort, Resource: resource}, start, end, resolution, align)
+	return self.kubeletApi.GetContainer(datasource.Host{IP: pod.HostInternalIP, Port: self.kubeletPort, Resource: resource}, start, end)
 }
 
-func (self *kubePodsSource) getPodInfo(nodeList *nodes.NodeList, start, end time.Time, resolution time.Duration, align bool) ([]api.Pod, error) {
+func (self *kubePodsSource) getPodInfo(nodeList *nodes.NodeList, start, end time.Time) ([]api.Pod, error) {
 	pods, err := self.podsApi.List(nodeList)
 	if err != nil {
 		return []api.Pod{}, err
@@ -102,10 +104,10 @@ func (self *kubePodsSource) getPodInfo(nodeList *nodes.NodeList, start, end time
 		go func(pod *api.Pod) {
 			defer wg.Done()
 			for index, container := range pod.Containers {
-				rawContainer, err := self.getStatsFromKubelet(pod, container.Name, start, end, resolution, align)
+				rawContainer, err := self.getStatsFromKubelet(pod, container.Name, start, end)
 				if err != nil {
 					// Containers could be in the process of being setup or restarting while the pod is alive.
-					glog.V(2).Infof("failed to get stats for container %q in pod %q/%q", container.Name, pod.Namespace, pod.Name)
+					glog.Errorf("failed to get stats for container %q in pod %q/%q", container.Name, pod.Namespace, pod.Name)
 					self.recordPodError(*pod)
 					continue
 				}
@@ -115,7 +117,7 @@ func (self *kubePodsSource) getPodInfo(nodeList *nodes.NodeList, start, end time
 				glog.V(5).Infof("Fetched stats from kubelet for container %s in pod %s", container.Name, pod.Name)
 				pod.Containers[index].Hostname = pod.Hostname
 				pod.Containers[index].ExternalID = pod.ExternalID
-				pod.Containers[index].Spec = rawContainer.Spec
+				pod.Containers[index].Spec.ContainerSpec = rawContainer.Spec.ContainerSpec
 				pod.Containers[index].Stats = rawContainer.Stats
 			}
 		}(&pods[index])
@@ -125,12 +127,12 @@ func (self *kubePodsSource) getPodInfo(nodeList *nodes.NodeList, start, end time
 	return pods, nil
 }
 
-func (self *kubePodsSource) GetInfo(start, end time.Time, resolution time.Duration, align bool) (api.AggregateData, error) {
+func (self *kubePodsSource) GetInfo(start, end time.Time) (api.AggregateData, error) {
 	kubeNodes, err := self.nodesApi.List()
 	if err != nil || len(kubeNodes.Items) == 0 {
 		return api.AggregateData{}, err
 	}
-	podsInfo, err := self.getPodInfo(kubeNodes, start, end, resolution, align)
+	podsInfo, err := self.getPodInfo(kubeNodes, start, end)
 	if err != nil {
 		return api.AggregateData{}, err
 	}
@@ -147,5 +149,5 @@ func (self *kubePodsSource) DebugInfo() string {
 }
 
 func (kps *kubePodsSource) Name() string {
-	return "Kube Pods Source"
+	return KubePodsSourceName
 }

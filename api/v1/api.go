@@ -17,25 +17,27 @@ package v1
 import (
 	"net/http"
 
-	"github.com/GoogleCloudPlatform/heapster/manager"
-	sinksApi "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
-	"github.com/GoogleCloudPlatform/heapster/util"
 	restful "github.com/emicklei/go-restful"
-	"github.com/golang/glog"
+	"k8s.io/heapster/api/v1/types"
+	"k8s.io/heapster/manager"
+	sinksApi "k8s.io/heapster/sinks/api"
+	"k8s.io/heapster/util"
 )
 
 type Api struct {
-	manager manager.Manager
+	manager             manager.Manager
+	runningInKubernetes bool
 }
 
 // Create a new Api to serve from the specified cache.
-func NewApi(m manager.Manager) *Api {
+func NewApi(m manager.Manager, runningInKuberentes bool) *Api {
 	return &Api{
-		manager: m,
+		manager:             m,
+		runningInKubernetes: runningInKuberentes,
 	}
 }
 
-// Register the Api on the specified endpoint.
+// Register the mainApi on the specified endpoint.
 func (a *Api) Register(container *restful.Container) {
 	ws := new(restful.WebService)
 	ws.
@@ -43,11 +45,10 @@ func (a *Api) Register(container *restful.Container) {
 		Doc("Exports the latest point for all Heapster metrics").
 		Produces(restful.MIME_JSON)
 	ws.Route(ws.GET("").
-		Filter(compressionFilter).
 		To(a.exportMetrics).
 		Doc("export the latest data point for all metrics").
 		Operation("exportMetrics").
-		Writes([]*Timeseries{}))
+		Writes([]*types.Timeseries{}))
 	container.Add(ws)
 	ws = new(restful.WebService)
 	ws.Path("/api/v1/metric-export-schema").
@@ -57,7 +58,7 @@ func (a *Api) Register(container *restful.Container) {
 		To(a.exportMetricsSchema).
 		Doc("export the schema for all metrics").
 		Operation("exportmetricsSchema").
-		Writes(TimeseriesSchema{}))
+		Writes(types.TimeseriesSchema{}))
 	container.Add(ws)
 	ws = new(restful.WebService)
 	ws.Path("/api/v1/sinks").
@@ -75,39 +76,27 @@ func (a *Api) Register(container *restful.Container) {
 		Writes([]string{}))
 	container.Add(ws)
 
-	// Register the endpoints of the model
 	a.RegisterModel(container)
-}
-
-func compressionFilter(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
-	// wrap responseWriter into a compressing one
-	compress, err := restful.NewCompressingResponseWriter(resp.ResponseWriter, restful.ENCODING_GZIP)
-	if err != nil {
-		glog.Warningf("Failed to create CompressingResponseWriter for request %q: %v", req.Request.URL, err)
-		return
-	}
-	resp.ResponseWriter = compress
-	defer compress.Close()
-	chain.ProcessFilter(req, resp)
 }
 
 // Labels used by the target schema. A target schema uniquely identifies a container.
 var targetLabelNames = map[string]struct{}{
-	sinksApi.LabelPodId.Key:           struct{}{},
-	sinksApi.LabelPodName.Key:         struct{}{},
-	sinksApi.LabelPodNamespace.Key:    struct{}{},
-	sinksApi.LabelContainerName.Key:   struct{}{},
-	sinksApi.LabelLabels.Key:          struct{}{},
-	sinksApi.LabelHostname.Key:        struct{}{},
-	sinksApi.LabelHostID.Key:          struct{}{},
-	sinksApi.LabelPodNamespaceUID.Key: struct{}{},
+	sinksApi.LabelPodId.Key:              {},
+	sinksApi.LabelPodName.Key:            {},
+	sinksApi.LabelPodNamespace.Key:       {},
+	sinksApi.LabelContainerName.Key:      {},
+	sinksApi.LabelLabels.Key:             {},
+	sinksApi.LabelHostname.Key:           {},
+	sinksApi.LabelHostID.Key:             {},
+	sinksApi.LabelPodNamespaceUID.Key:    {},
+	sinksApi.LabelContainerBaseImage.Key: {},
 }
 
 // Separates target schema labels from other labels.
 func separateLabels(labels map[string]string) (map[string]string, map[string]string) {
 	targetLabels := make(map[string]string, len(targetLabelNames))
 	otherLabels := make(map[string]string, len(labels)-len(targetLabels))
-	for label, _ := range labels {
+	for label := range labels {
 		// Ignore blank labels.
 		if label == "" {
 			continue
@@ -124,22 +113,22 @@ func separateLabels(labels map[string]string) (map[string]string, map[string]str
 }
 
 func (a *Api) exportMetricsSchema(request *restful.Request, response *restful.Response) {
-	result := TimeseriesSchema{}
+	result := types.TimeseriesSchema{}
 	for _, label := range sinksApi.CommonLabels() {
-		result.CommonLabels = append(result.CommonLabels, LabelDescriptor{
+		result.CommonLabels = append(result.CommonLabels, types.LabelDescriptor{
 			Key:         label.Key,
 			Description: label.Description,
 		})
 	}
 	for _, label := range sinksApi.PodLabels() {
-		result.PodLabels = append(result.PodLabels, LabelDescriptor{
+		result.PodLabels = append(result.PodLabels, types.LabelDescriptor{
 			Key:         label.Key,
 			Description: label.Description,
 		})
 	}
 
 	for _, metric := range sinksApi.SupportedStatMetrics() {
-		md := MetricDescriptor{
+		md := types.MetricDescriptor{
 			Name:        metric.Name,
 			Description: metric.Description,
 			Type:        metric.Type.String(),
@@ -147,7 +136,7 @@ func (a *Api) exportMetricsSchema(request *restful.Request, response *restful.Re
 			Units:       metric.Units.String(),
 		}
 		for _, label := range metric.Labels {
-			md.Labels = append(md.Labels, LabelDescriptor{
+			md.Labels = append(md.Labels, types.LabelDescriptor{
 				Key:         label.Key,
 				Description: label.Description,
 			})
@@ -165,7 +154,7 @@ func (a *Api) exportMetrics(request *restful.Request, response *restful.Response
 	}
 
 	// Group points by target labels.
-	timeseriesForTargetLabels := map[string]*Timeseries{}
+	timeseriesForTargetLabels := map[string]*types.Timeseries{}
 	for _, point := range points {
 		targetLabels, otherLabels := separateLabels(point.Labels)
 		labelsStr := util.LabelsToString(targetLabels, ",")
@@ -173,15 +162,15 @@ func (a *Api) exportMetrics(request *restful.Request, response *restful.Response
 		// Add timeseries if it does not exist.
 		timeseries, ok := timeseriesForTargetLabels[labelsStr]
 		if !ok {
-			timeseries = &Timeseries{
-				Metrics: map[string][]Point{},
+			timeseries = &types.Timeseries{
+				Metrics: map[string][]types.Point{},
 				Labels:  targetLabels,
 			}
 			timeseriesForTargetLabels[labelsStr] = timeseries
 		}
 
 		// Add point to this timeseries
-		timeseries.Metrics[point.Name] = append(timeseries.Metrics[point.Name], Point{
+		timeseries.Metrics[point.Name] = append(timeseries.Metrics[point.Name], types.Point{
 			Start:  point.Start,
 			End:    point.End,
 			Labels: otherLabels,
@@ -190,7 +179,7 @@ func (a *Api) exportMetrics(request *restful.Request, response *restful.Response
 	}
 
 	// Turn into a slice.
-	timeseries := make([]*Timeseries, 0, len(timeseriesForTargetLabels))
+	timeseries := make([]*types.Timeseries, 0, len(timeseriesForTargetLabels))
 	for _, val := range timeseriesForTargetLabels {
 		timeseries = append(timeseries, val)
 	}

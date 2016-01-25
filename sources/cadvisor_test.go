@@ -19,24 +19,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/datasource"
+	"k8s.io/heapster/sources/nodes"
 )
 
 type fakeDataSource struct {
-	f func(host datasource.Host, start, end time.Time, resolution time.Duration) (subcontainers []*api.Container, root *api.Container, err error)
+	f func(host datasource.Host, start, end time.Time) (subcontainers []*api.Container, root *api.Container, err error)
 }
 
-func (self *fakeDataSource) GetAllContainers(host datasource.Host, start, end time.Time, resolution time.Duration, align bool) (subcontainers []*api.Container, root *api.Container, err error) {
-	return self.f(host, start, end, resolution)
+func (self *fakeDataSource) GetAllContainers(host datasource.Host, start, end time.Time) (subcontainers []*api.Container, root *api.Container, err error) {
+	return self.f(host, start, end)
 }
 
 func TestBasicSuccess(t *testing.T) {
 	cadvisorApi := &fakeDataSource{
-		f: func(host datasource.Host, start, end time.Time, resolution time.Duration) (subcontainers []*api.Container, root *api.Container, err error) {
+		f: func(host datasource.Host, start, end time.Time) (subcontainers []*api.Container, root *api.Container, err error) {
 			return nil, nil, nil
 		},
 	}
@@ -46,7 +46,7 @@ func TestBasicSuccess(t *testing.T) {
 		cadvisorPort: 8080,
 		cadvisorApi:  cadvisorApi,
 	}
-	data, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute), time.Second, false)
+	data, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	require.Equal(t, api.AggregateData{Pods: nil, Containers: nil, Machine: nil}, data)
 }
@@ -69,7 +69,7 @@ func TestWorkflowSuccess(t *testing.T) {
 		},
 	}
 	cadvisorApi := &fakeDataSource{
-		f: func(host datasource.Host, start, end time.Time, resolution time.Duration) (subcontainers []*api.Container, root *api.Container, err error) {
+		f: func(host datasource.Host, start, end time.Time) (subcontainers []*api.Container, root *api.Container, err error) {
 			data, exists := expectedData[host]
 			if !exists {
 				return nil, nil, fmt.Errorf("unexpected host: %+v", host)
@@ -88,7 +88,7 @@ func TestWorkflowSuccess(t *testing.T) {
 		cadvisorPort: 8080,
 		cadvisorApi:  cadvisorApi,
 	}
-	data, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute), time.Second, false)
+	data, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	assert.Len(t, data.Containers, 2)
 	assert.Len(t, data.Machine, 2)

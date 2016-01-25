@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	"github.com/stretchr/testify/require"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/nodes"
 )
 
 type fakePodsApi struct {
@@ -39,7 +39,7 @@ func TestKubePodMetricsBasic(t *testing.T) {
 	nodesApi := &fakeNodesApi{nodes.NodeList{}}
 	podsApi := &fakePodsApi{[]api.Pod{}}
 	source := NewKubePodMetrics(10250, &fakeKubeletApi{}, nodesApi, podsApi)
-	_, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute), time.Second, false)
+	_, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	require.NotEmpty(t, source.DebugInfo())
 }
@@ -70,7 +70,7 @@ func TestKubePodMetricsFull(t *testing.T) {
 	podsApi := &fakePodsApi{podList}
 	kubeletApi := &fakeKubeletApi{container: container}
 	source := NewKubePodMetrics(10250, kubeletApi, nodesApi, podsApi)
-	data, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute), time.Second, false)
+	data, err := source.GetInfo(time.Now(), time.Now().Add(time.Minute))
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 }

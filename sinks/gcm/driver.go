@@ -18,11 +18,11 @@ import (
 	"fmt"
 	"net/url"
 
-	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
+	kube_api "k8s.io/kubernetes/pkg/api"
 
-	"github.com/GoogleCloudPlatform/heapster/extpoints"
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
 	"github.com/golang/glog"
+	"k8s.io/heapster/extpoints"
+	sink_api "k8s.io/heapster/sinks/api"
 )
 
 type gcmSink struct {
@@ -104,7 +104,7 @@ func init() {
 	extpoints.SinkFactories.Register(CreateGCMSink, "gcm")
 }
 
-func CreateGCMSink(uri *url.URL) ([]sink_api.ExternalSink, error) {
+func CreateGCMSink(uri *url.URL, _ extpoints.HeapsterConf) ([]sink_api.ExternalSink, error) {
 	if *uri != (url.URL{}) {
 		return nil, fmt.Errorf("gcm sinks don't take arguments")
 	}

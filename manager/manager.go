@@ -21,24 +21,17 @@ import (
 
 	"github.com/golang/glog"
 
-	"github.com/GoogleCloudPlatform/heapster/model"
-	"github.com/GoogleCloudPlatform/heapster/sinks"
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
-	"github.com/GoogleCloudPlatform/heapster/sinks/cache"
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/store"
+	"k8s.io/heapster/model"
+	"k8s.io/heapster/sinks"
+	sink_api "k8s.io/heapster/sinks/api"
+	"k8s.io/heapster/sinks/cache"
+	source_api "k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/datasource"
 )
 
 // Manager provides an interface to control the core of heapster.
 // Implementations are not required to be thread safe.
 type Manager interface {
-	// Housekeep collects data from all the configured sources and
-	// stores the data to all the configured sinks.
-	Housekeep()
-
-	// HousekeepModel performs housekeeping for the Model entity
-	HousekeepModel()
-
 	// Export the latest data point of all metrics.
 	ExportMetrics() ([]*sink_api.Point, error)
 
@@ -49,19 +42,28 @@ type Manager interface {
 	SinkUris() Uris
 
 	// Get a reference to the cluster entity of the model, if it exists.
-	GetCluster() model.Cluster
+	GetModel() model.Model
+
+	// Starts the manager.
+	Start()
+
+	// Stops the manager.
+	Stop()
 }
 
 type realManager struct {
-	sources     []source_api.Source
-	cache       cache.Cache
-	model       model.Cluster
-	sinkManager sinks.ExternalSinkManager
-	sinkUris    Uris
-	lastSync    time.Time
-	resolution  time.Duration
-	align       bool
-	decoder     sink_api.Decoder
+	sources       []source_api.Source
+	cache         cache.Cache
+	model         model.Model
+	modelDuration time.Duration
+	sinkManager   sinks.ExternalSinkManager
+	sinkUris      Uris
+	lastSync      time.Time
+	resolution    time.Duration
+	decoder       sink_api.Decoder
+	mainStopChan  chan struct{}
+	sinkStopChan  chan<- struct{}
+	modelStopChan chan struct{}
 }
 
 type syncData struct {
@@ -69,39 +71,38 @@ type syncData struct {
 	mutex sync.Mutex
 }
 
-func NewManager(sources []source_api.Source, sinkManager sinks.ExternalSinkManager, res, bufferDuration time.Duration, useModel bool, modelRes time.Duration, align bool) (Manager, error) {
-	// TimeStore constructor passed to the cluster implementation.
-	tsConstructor := func() store.TimeStore {
-		// TODO(afein): determine default analogy of cache duration to Timestore durations.
-		return store.NewGCStore(store.NewCMAStore(), 5*bufferDuration)
-	}
-	var newCluster model.Cluster = nil
+func NewManager(sources []source_api.Source, sinkManager sinks.ExternalSinkManager, res, bufferDuration time.Duration,
+	c cache.Cache, useModel bool, modelRes, modelDuration time.Duration) (Manager, error) {
+
+	var newModel model.Model
 	if useModel {
-		newCluster = model.NewCluster(tsConstructor, modelRes)
+		newModel = model.NewModel(modelRes)
+		// Temporary semi-hack to get model storage garbage-collected.
+		c.AddCacheListener(newModel.GetCacheListener())
 	}
-	firstSync := time.Now()
-	if align {
-		firstSync = firstSync.Truncate(res).Add(res)
-	}
+
 	return &realManager{
-		sources:     sources,
-		sinkManager: sinkManager,
-		cache:       cache.NewCache(bufferDuration),
-		model:       newCluster,
-		lastSync:    firstSync,
-		resolution:  res,
-		align:       align,
-		decoder:     sink_api.NewDecoder(),
+		sources:       sources,
+		sinkManager:   sinkManager,
+		cache:         c,
+		model:         newModel,
+		modelDuration: modelDuration,
+		lastSync:      time.Now().Round(res),
+		resolution:    res,
+		decoder:       sink_api.NewDecoder(),
+		mainStopChan:  make(chan struct{}),
+		modelStopChan: make(chan struct{}),
+		sinkStopChan:  sinkManager.Sync(),
 	}, nil
 }
 
-func (rm *realManager) GetCluster() model.Cluster {
+func (rm *realManager) GetModel() model.Model {
 	return rm.model
 }
 
 func (rm *realManager) scrapeSource(s source_api.Source, start, end time.Time, sd *syncData, errChan chan<- error) {
 	glog.V(2).Infof("attempting to get data from source %q", s.Name())
-	data, err := s.GetInfo(start, end, rm.resolution, rm.align)
+	data, err := s.GetInfo(start, end)
 	if err != nil {
 		errChan <- fmt.Errorf("failed to get information from source %q - %v", s.Name(), err)
 		return
@@ -112,28 +113,56 @@ func (rm *realManager) scrapeSource(s source_api.Source, start, end time.Time, s
 	errChan <- nil
 }
 
+func (rm *realManager) Start() {
+	go rm.Housekeep()
+	if rm.model != nil {
+		go rm.HousekeepModel()
+	}
+}
+
+func (rm *realManager) Stop() {
+	rm.mainStopChan <- struct{}{}
+	if rm.model != nil {
+		rm.modelStopChan <- struct{}{}
+	}
+	rm.sinkStopChan <- struct{}{}
+}
+
 // HousekeepModel periodically populates the manager model from the manager cache.
 func (rm *realManager) HousekeepModel() {
-	if rm.model != nil {
-		if err := rm.model.Update(rm.cache); err != nil {
-			glog.V(1).Infof("Model housekeeping returned error: %s", err.Error())
+	for {
+		select {
+		//TODO: better timing here
+		case <-time.After(rm.modelDuration):
+			if err := rm.model.Update(rm.cache); err != nil {
+				glog.V(1).Infof("Model housekeeping returned error: %s", err.Error())
+			}
+		case <-rm.modelStopChan:
+			return
 		}
 	}
 }
 
 func (rm *realManager) Housekeep() {
-	errChan := make(chan error, len(rm.sources))
-	var sd syncData
-	start := rm.lastSync
-	end := time.Now()
-	if rm.align {
-		end = end.Truncate(rm.resolution)
-		if start.After(end) {
+	for {
+		start := rm.lastSync
+		end := start.Add(rm.resolution)
+		timeToNextSync := end.Sub(time.Now())
+		// TODO: consider adding some delay here
+		select {
+		case <-time.After(timeToNextSync):
+			rm.housekeep(start, end)
+			rm.lastSync = end
+		case <-rm.mainStopChan:
 			return
 		}
 	}
-	rm.lastSync = end
-	glog.V(2).Infof("starting to scrape data from sources start:%v end:%v", start, end)
+}
+
+func (rm *realManager) housekeep(start, end time.Time) {
+	glog.V(2).Infof("starting to scrape data from sources start: %v end: %v", start, end)
+	errChan := make(chan error, len(rm.sources))
+	var sd syncData
 	for idx := range rm.sources {
 		s := rm.sources[idx]
 		go rm.scrapeSource(s, start, end, &sd, errChan)
@@ -144,6 +173,9 @@ func (rm *realManager) Housekeep() {
 			errors = append(errors, err.Error())
 		}
 	}
+
+	rm.mapInfraContainersToPods(&sd)
+
 	glog.V(2).Infof("completed scraping data from sources. Errors: %v", errors)
 	if err := rm.cache.StorePods(sd.data.Pods); err != nil {
 		errors = append(errors, err.Error())
@@ -154,12 +186,46 @@ func (rm *realManager) Housekeep() {
 	if err := rm.cache.StoreContainers(sd.data.Containers); err != nil {
 		errors = append(errors, err.Error())
 	}
-	if err := rm.sinkManager.Store(sd.data); err != nil {
-		errors = append(errors, err.Error())
-	}
-
 	if len(errors) > 0 {
 		glog.V(1).Infof("housekeeping resulted in following errors: %v", errors)
+	}
+}
+
+// Map infra containers to pods - only if we have any pods of course.
+// Clunky but required without significant API changes (coming soon!).
+func (rm *realManager) mapInfraContainersToPods(sd *syncData) {
+	if len(sd.data.Pods) > 0 {
+		sd.mutex.Lock()
+		defer sd.mutex.Unlock()
+
+		// Iterate slice in reverse as we are going to be deleting containers if we manage to match infra containers.
+		for containerIndex := len(sd.data.Containers) - 1; containerIndex >= 0; containerIndex-- {
+			cont := sd.data.Containers[containerIndex]
+			podName, podNameFound := cont.Spec.Labels[datasource.KubernetesPodNameLabel]
+			podNamespace, podNamespaceFound := cont.Spec.Labels[datasource.KubernetesPodNamespaceLabel]
+
+			// Not a pod container then continue.
+			if !podNameFound || !podNamespaceFound {
+				continue
+			}
+
+			// Find a pod with these details.
+			for podIndex := range sd.data.Pods {
+				pod := &sd.data.Pods[podIndex]
+				// If we find a matching pod then add the container to the pod's containers slice.
+				if pod.Name == podName && pod.Namespace == podNamespace {
+					cont.Hostname = pod.Hostname
+					cont.ExternalID = pod.ExternalID
+					cont.Name = datasource.KubernetesPodInfraContainerName
+					pod.Containers = append(pod.Containers, cont)
+
+					// Delete the matched container so we don't duplicate containers.
+					sd.data.Containers = append(sd.data.Containers[:containerIndex], sd.data.Containers[containerIndex+1:]...)
+
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -226,9 +292,11 @@ func onlyKeepLatestStat(cont *cache.ContainerElement) {
 }
 
 func (rm *realManager) SetSinkUris(sinkUris Uris) error {
-	sinks, err := newSinks(sinkUris)
+	sinks, err := newSinks(sinkUris, rm.resolution)
 	if err != nil {
-		return err
+		// Skip sink setup errors here. We do not want to fail if one or more
+		// sinks fail.
+		glog.Error(err)
 	}
 	if err := rm.sinkManager.SetSinks(sinks); err != nil {
 		return err

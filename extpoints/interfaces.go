@@ -16,11 +16,17 @@ package extpoints
 
 import (
 	"net/url"
+	"time"
 
-	sinksApi "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
-	sourceApi "github.com/GoogleCloudPlatform/heapster/sources/api"
+	sinksApi "k8s.io/heapster/sinks/api"
+	"k8s.io/heapster/sinks/cache"
+	sourceApi "k8s.io/heapster/sources/api"
 )
 
-type SourceFactory func(*url.URL) ([]sourceApi.Source, error)
+type SourceFactory func(*url.URL, cache.Cache) ([]sourceApi.Source, error)
 
-type SinkFactory func(*url.URL) ([]sinksApi.ExternalSink, error)
+type HeapsterConf struct {
+	StatsResolution time.Duration
+}
+
+type SinkFactory func(*url.URL, HeapsterConf) ([]sinksApi.ExternalSink, error)

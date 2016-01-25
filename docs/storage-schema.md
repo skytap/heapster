@@ -31,7 +31,7 @@ Heapster tags each metric with the following labels.
 | labels         | Comma-separated list of user-provided labels. Format is 'key:value'           | v0.9            | Yes                 |
 | hostname       | Hostname where the container ran                                              | v0.9            | No                  |
 | namespace_id   | UID of the namespace of a Pod                                                 | v0.14.1         | Yes                 |
-| host_id    | Cloud-provider specified or user specified Identifier of a node               | v0.14.1         | Yes                 |
+| host_id        | Cloud-provider specified or user specified Identifier of a node               | v0.14.1         | Yes                 |
 | resource_id    | An unique identifier used to differentiate multiple metrics of the same type. e.x. Fs partitions under filesystem/usage | v0.11.0 | No |
 
 
@@ -46,6 +46,7 @@ The series name is constructed by combining the metric name with its type and un
 `list series`
 
 ###### Output
+
 ```
 cpu/usage_ns_cumulative
 filesystem/usage
@@ -58,6 +59,7 @@ network/tx_bytes_cumulative
 network/tx_errors_cumulative
 uptime_ms_cumulative
 ```
+
 *Note: Unit 'Count' is ignored*
 
 Heapster adds timestamp and sequence number to every metric.
@@ -79,13 +81,13 @@ TODO: Add a snapshot of all the metrics stored in GCM.
 
 ### Hawkular
 
-Each metric is stored as separate timeseries (metric) in Hawkular-Metrics with tags being inherited from common ancestor type. The metric name is created with the following format: `containerName/podId/metricName` (`/` is separator). All the metrics are stored as gauges at this point (this might change after the counter type has been redefined in the Hawkular). Each definition stores the labels as tags with following addons:
+Each metric is stored as separate timeseries (metric) in Hawkular-Metrics with tags being inherited from common ancestor type. The metric name is created with the following format: `containerName/podId/metricName` (`/` is separator). Each definition stores the labels as tags with following addons:
 
 * All the Label descriptions are stored as label_description
 * The ancestor metric name (such as cpu/usage) is stored under the tag `descriptor_name`
 * To ease search, a tag with `group_id` stores the key `containerName/metricName` so each podId can be linked under a single timeseries if necessary.
-* Type (Gauge / Cumulative) is stored to `type` tag
 * Units are stored under `units` tag
+* If labelToTenant parameter is given, any metric with the label will use this label's value as the target tenant. If the metric doesn't have the label defined, default tenant is used.
 
 At the start, all the definitions are fetched from the Hawkular-Metrics tenant and filtered to cache only the Heapster metrics. It is recommended to use a separate tenant for Heapster information if you have lots of metrics from other systems, but not required.
 

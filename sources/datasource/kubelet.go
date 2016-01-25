@@ -23,16 +23,22 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"regexp"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	kube_client "github.com/GoogleCloudPlatform/kubernetes/pkg/client"
 	"github.com/golang/glog"
 	cadvisor "github.com/google/cadvisor/info/v1"
+	"k8s.io/heapster/sources/api"
+	kube_client "k8s.io/kubernetes/pkg/client/unversioned"
 )
 
 // TODO(vmarmol): Use Kubernetes' if we export it as an API.
-const kubernetesPodNameLabel = "io.kubernetes.pod.name"
+// Copied from k8s.io/kubernetes/pkg/kubelet/dockertools/labels.go - not exported there :(
+const (
+	KubernetesPodNameLabel          = "io.kubernetes.pod.name"
+	KubernetesPodNamespaceLabel     = "io.kubernetes.pod.namespace"
+	KubernetesPodInfraContainerName = "POD"
+)
 
 type kubeletSource struct {
 	config *kube_client.KubeletConfig
@@ -59,8 +65,25 @@ func (self *kubeletSource) postRequestAndGetValue(client *http.Client, req *http
 	return nil
 }
 
-func (self *kubeletSource) getContainer(url string, start, end time.Time, resolution time.Duration, align bool) (*api.Container, error) {
-	body, err := json.Marshal(cadvisor.ContainerInfoRequest{Start: start, End: end})
+func (self *kubeletSource) parseStat(containerInfo *cadvisor.ContainerInfo) *api.Container {
+	if len(containerInfo.Stats) == 0 {
+		return nil
+	}
+	container := &api.Container{
+		Name:  containerInfo.Name,
+		Spec:  api.ContainerSpec{ContainerSpec: containerInfo.Spec},
+		Stats: sampleContainerStats(containerInfo.Stats),
+	}
+	if len(containerInfo.Aliases) > 0 {
+		container.Name = containerInfo.Aliases[0]
+	}
+
+	return container
+}
+
+func (self *kubeletSource) getContainer(url string, start, end time.Time) (*api.Container, error) {
+	// TODO: Get rid of 'NumStats' once cadvisor supports time range queries without specifying that.
+	body, err := json.Marshal(cadvisor.ContainerInfoRequest{Start: start, End: end, NumStats: int(time.Minute / time.Second)})
 	if err != nil {
 		return nil, err
 	}
@@ -76,25 +99,23 @@ func (self *kubeletSource) getContainer(url string, start, end time.Time, resolu
 	}
 	err = self.postRequestAndGetValue(client, req, &containerInfo)
 	if err != nil {
-		glog.V(2).Infof("failed to get stats from kubelet url: %s - %s\n", url, err)
+		glog.Errorf("failed to get stats from kubelet url: %s - %s\n", url, err)
 		return nil, err
 	}
 	glog.V(4).Infof("url: %q, body: %q, data: %+v", url, string(body), containerInfo)
-	return parseStat(&containerInfo, start, resolution, align), nil
+	return self.parseStat(&containerInfo), nil
 }
 
-func (self *kubeletSource) GetContainer(host Host, start, end time.Time, resolution time.Duration, align bool) (container *api.Container, err error) {
-	var schema string
+func (self *kubeletSource) GetContainer(host Host, start, end time.Time) (container *api.Container, err error) {
+	scheme := "http"
 	if self.config != nil && self.config.EnableHttps {
-		schema = "https"
-	} else {
-		schema = "http"
+		scheme = "https"
 	}
 
-	url := fmt.Sprintf("%s://%s:%d/%s", schema, host.IP, host.Port, host.Resource)
+	url := fmt.Sprintf("%s://%s:%d/%s", scheme, host.IP, host.Port, host.Resource)
 	glog.V(3).Infof("about to query kubelet using url: %q", url)
 
-	return self.getContainer(url, start, end, resolution, align)
+	return self.getContainer(url, start, end)
 }
 
 // TODO(vmarmol): Use Kubernetes' if we export it as an API.
@@ -122,12 +143,20 @@ type statsRequest struct {
 }
 
 // Get stats for all non-Kubernetes containers.
-func (self *kubeletSource) GetAllRawContainers(host Host, start, end time.Time, resolution time.Duration, align bool) ([]api.Container, error) {
-	url := fmt.Sprintf("http://%s:%d/stats/container/", host.IP, host.Port)
-	return self.getAllContainers(url, start, end, resolution, align)
+func (self *kubeletSource) GetAllRawContainers(host Host, start, end time.Time) ([]api.Container, error) {
+	scheme := "http"
+	if self.config != nil && self.config.EnableHttps {
+		scheme = "https"
+	}
+
+	url := fmt.Sprintf("%s://%s:%d/stats/container/", scheme, host.IP, host.Port)
+	return self.getAllContainers(url, start, end)
 }
 
-func (self *kubeletSource) getAllContainers(url string, start, end time.Time, resolution time.Duration, align bool) ([]api.Container, error) {
+// Match the pod infra container - this name is hard coded so shouldn't change, but still feels very fragile.
+var podInfraContainerNameRE = regexp.MustCompile(`^k8s_` + KubernetesPodInfraContainerName + `\.[[:alnum:]]+_([[:alnum:]-]+)_([[:alnum:]-]+)`)
+
+func (self *kubeletSource) getAllContainers(url string, start, end time.Time) ([]api.Container, error) {
 	// Request data from all subcontainers.
 	request := statsRequest{
 		ContainerName: "/",
@@ -146,20 +175,37 @@ func (self *kubeletSource) getAllContainers(url string, start, end time.Time, re
 	req.Header.Set("Content-Type", "application/json")
 
 	var containers map[string]cadvisor.ContainerInfo
-	err = self.postRequestAndGetValue(http.DefaultClient, req, &containers)
+	client := self.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	err = self.postRequestAndGetValue(client, req, &containers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all container stats from Kubelet URL %q: %v", url, err)
 	}
 
 	// TODO(vmarmol): Use this for all stats gathering.
-	// Don't include the Kubernetes containers, those are included elsewhere.
 	result := make([]api.Container, 0, len(containers))
 	for _, containerInfo := range containers {
-		if _, ok := containerInfo.Spec.Labels[kubernetesPodNameLabel]; ok {
-			continue
+		// If this is a Kubernetes managed container, then we should only include the Kubernetes infra containers -
+		// the others are collected via the kubelet pod stats API.
+		if _, ok := containerInfo.Spec.Labels[KubernetesPodNameLabel]; ok {
+			// As this is a raw container it is the aliases that contains the actual Docker name.
+			var matches []string
+			for _, alias := range containerInfo.Aliases {
+				matches = podInfraContainerNameRE.FindStringSubmatch(alias)
+				break
+			}
+			if len(matches) == 0 {
+				continue
+			}
+
+			// Set the namespace label.
+			containerInfo.Spec.Labels[KubernetesPodNameLabel] = matches[1]
+			containerInfo.Spec.Labels[KubernetesPodNamespaceLabel] = matches[2]
 		}
 
-		cont := parseStat(&containerInfo, start, resolution, align)
+		cont := self.parseStat(&containerInfo)
 		if cont != nil {
 			result = append(result, *cont)
 		}

@@ -20,20 +20,20 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/GoogleCloudPlatform/heapster/extpoints"
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
-	kube_client "github.com/GoogleCloudPlatform/kubernetes/pkg/client"
-	kubeClientCmd "github.com/GoogleCloudPlatform/kubernetes/pkg/client/clientcmd"
-	kubeClientCmdApi "github.com/GoogleCloudPlatform/kubernetes/pkg/client/clientcmd/api"
 	"github.com/golang/glog"
+	"k8s.io/heapster/extpoints"
+	"k8s.io/heapster/sinks/cache"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/datasource"
+	"k8s.io/heapster/sources/nodes"
+	kube_client "k8s.io/kubernetes/pkg/client/unversioned"
+	kubeClientCmd "k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
+	kubeClientCmdApi "k8s.io/kubernetes/pkg/client/unversioned/clientcmd/api"
 )
 
 const (
 	APIVersion = "v1"
 
-	defaultInsecure           = false
 	defaultKubeletPort        = 10255
 	defaultKubeletHttps       = false
 	defaultUseServiceAccount  = false
@@ -72,7 +72,7 @@ func getConfigOverrides(uri *url.URL) (*kubeClientCmd.ConfigOverrides, error) {
 	return &kubeConfigOverride, nil
 }
 
-func CreateKubeSources(uri *url.URL) ([]api.Source, error) {
+func CreateKubeSources(uri *url.URL, c cache.Cache) ([]api.Source, error) {
 	var (
 		kubeConfig *kube_client.Config
 		err        error
@@ -102,6 +102,10 @@ func CreateKubeSources(uri *url.URL) ([]api.Source, error) {
 			kubeConfig.Host = configOverrides.ClusterInfo.Server
 		}
 		kubeConfig.Version = configOverrides.ClusterInfo.APIVersion
+		kubeConfig.Insecure = configOverrides.ClusterInfo.InsecureSkipTLSVerify
+		if configOverrides.ClusterInfo.InsecureSkipTLSVerify {
+			kubeConfig.TLSClientConfig.CAFile = ""
+		}
 	} else {
 		authFile := ""
 		if len(opts["auth"]) > 0 {
@@ -181,7 +185,7 @@ func CreateKubeSources(uri *url.URL) ([]api.Source, error) {
 
 	kubePodsSource := NewKubePodMetrics(kubeletPort, kubeletApi, nodesApi, newPodsApi(kubeClient))
 	kubeNodeSource := NewKubeNodeMetrics(kubeletPort, kubeletApi, nodesApi)
-	kubeEventsSource := NewKubeEvents(kubeClient)
+	kubeEventsSource := NewKubeEvents(kubeClient, c)
 
 	return []api.Source{kubePodsSource, kubeNodeSource, kubeEventsSource}, nil
 }

@@ -25,11 +25,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/extpoints"
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/sources/datasource"
-	"github.com/GoogleCloudPlatform/heapster/sources/nodes"
 	"github.com/golang/glog"
+	"k8s.io/heapster/extpoints"
+	"k8s.io/heapster/sinks/cache"
+	"k8s.io/heapster/sources/api"
+	"k8s.io/heapster/sources/datasource"
+	"k8s.io/heapster/sources/nodes"
 )
 
 const (
@@ -50,7 +51,7 @@ func init() {
 	extpoints.SourceFactories.Register(NewCadvisorSources, "cadvisor")
 }
 
-func (self *cadvisorSource) GetInfo(start, end time.Time, resolution time.Duration, align bool) (api.AggregateData, error) {
+func (self *cadvisorSource) GetInfo(start, end time.Time) (api.AggregateData, error) {
 	var (
 		lock sync.Mutex
 		wg   sync.WaitGroup
@@ -69,7 +70,7 @@ func (self *cadvisorSource) GetInfo(start, end time.Time, resolution time.Durati
 				IP:   info.InternalIP,
 				Port: self.cadvisorPort,
 			}
-			rawSubcontainers, node, err := self.cadvisorApi.GetAllContainers(host, start, end, resolution, align)
+			rawSubcontainers, node, err := self.cadvisorApi.GetAllContainers(host, start, end)
 			if err != nil {
 				glog.Error(err)
 				return
@@ -112,7 +113,7 @@ func (cs *cadvisorSource) Name() string {
 	return "Cadvisor Source"
 }
 
-func NewCadvisorSources(uri *url.URL) ([]api.Source, error) {
+func NewCadvisorSources(uri *url.URL, _ cache.Cache) ([]api.Source, error) {
 	switch uri.Path {
 	case "coreos", "fleet":
 		return newCoreosSources(uri.Query())

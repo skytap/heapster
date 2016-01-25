@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate go-extpoints
+//go:generate ./hooks/run_extpoints.sh
+
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
@@ -24,24 +26,28 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/manager"
-	"github.com/GoogleCloudPlatform/heapster/sinks"
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
-	"github.com/GoogleCloudPlatform/heapster/version"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/util"
 	"github.com/golang/glog"
+	"k8s.io/heapster/manager"
+	"k8s.io/heapster/sinks"
+	"k8s.io/heapster/sinks/cache"
+	source_api "k8s.io/heapster/sources/api"
+	"k8s.io/heapster/version"
 )
 
 var (
-	argPollDuration    = flag.Duration("poll_duration", 10*time.Second, "The frequency at which heapster will poll for stats")
-	argStatsResolution = flag.Duration("stats_resolution", 5*time.Second, "The resolution at which heapster will retain stats. Acceptable values are in the range [1 second, 'poll_duration')")
-	argAlignStats      = flag.Bool("align_stats", false, "Whether to align timestamps of metrics to multiplicity of 'stats_resolution'")
-	argCacheDuration   = flag.Duration("cache_duration", 10*time.Minute, "The total duration of the historical data that will be cached by heapster.")
-	argUseModel        = flag.Bool("use_model", false, "When true, the internal model representation will be used")
-	argModelResolution = flag.Duration("model_resolution", 2*time.Minute, "The resolution of the timeseries stored in the model. Applies only if use_model is true")
+	argStatsResolution = flag.Duration("stats_resolution", 5*time.Second, "The resolution at which heapster will retain stats.")
+	argSinkFrequency   = flag.Duration("sink_frequency", 10*time.Second, "Frequency at which data will be pushed to sinks")
+	argCacheDuration   = flag.Duration("cache_duration", 4*time.Minute, "The total duration of the historical data that will be cached by heapster.")
+	argUseModel        = flag.Bool("use_model", true, "When true, the internal model representation will be used")
+	argModelResolution = flag.Duration("model_resolution", 1*time.Minute, "The resolution of the timeseries stored in the model. Applies only if use_model is true")
+	argModelFrequency  = flag.Duration("model_frequency", 145*time.Second, "Frequency at which model will be updated. Applies only if use_model is true")
 	argPort            = flag.Int("port", 8082, "port to listen to")
 	argIp              = flag.String("listen_ip", "", "IP to listen on, defaults to all IPs")
 	argMaxProcs        = flag.Int("max_procs", 0, "max number of CPUs that can be used simultaneously. Less than 1 for default (number of cores)")
+	argTLSCertFile     = flag.String("tls_cert", "", "file containing TLS certificate")
+	argTLSKeyFile      = flag.String("tls_key", "", "file containing TLS key")
+	argTLSClientCAFile = flag.String("tls_client_ca", "", "file containing TLS client CA for client cert validation")
+	argAllowedUsers    = flag.String("allowed_users", "", "comma-separated list of allowed users")
 	argSources         manager.Uris
 	argSinks           manager.Uris
 )
@@ -64,52 +70,80 @@ func main() {
 	handler := setupHandlers(sources, sink, manager)
 	addr := fmt.Sprintf("%s:%d", *argIp, *argPort)
 	glog.Infof("Starting heapster on port %d", *argPort)
-	glog.Fatal(http.ListenAndServe(addr, handler))
+
+	server := &http.Server{
+		Addr:    addr,
+		Handler: handler,
+	}
+
+	if len(*argTLSCertFile) > 0 && len(*argTLSKeyFile) > 0 {
+		if len(*argTLSClientCAFile) > 0 {
+			authHandler, err := newAuthHandler(handler)
+			if err != nil {
+				glog.Fatal(err)
+			}
+			server.Handler = authHandler
+			server.TLSConfig = &tls.Config{ClientAuth: tls.RequestClientCert}
+		}
+
+		glog.Fatal(server.ListenAndServeTLS(*argTLSCertFile, *argTLSKeyFile))
+	} else {
+		glog.Fatal(server.ListenAndServe())
+	}
 }
 
 func validateFlags() error {
-	if *argPollDuration <= time.Second {
-		return fmt.Errorf("poll duration is invalid '%d'. Set it to a duration greater than a second", *argPollDuration)
-	}
 	if *argStatsResolution < time.Second {
 		return fmt.Errorf("stats resolution needs to be greater than a second - %d", *argStatsResolution)
-	}
-	if *argStatsResolution >= *argPollDuration {
-		return fmt.Errorf("stats resolution '%d' is not less than poll duration '%d'", *argStatsResolution, *argPollDuration)
 	}
 	if *argUseModel && (*argStatsResolution >= *argModelResolution) {
 		return fmt.Errorf("stats resolution '%d' is not less than model resolution '%d'", *argStatsResolution, *argModelResolution)
 	}
-
+	if *argSinkFrequency >= *argCacheDuration {
+		return fmt.Errorf("sink frequency '%d' is expected to be lesser than cache duration '%d'", *argSinkFrequency, *argCacheDuration)
+	}
+	if *argModelFrequency <= *argModelResolution {
+		return fmt.Errorf("model frequency '%d' is expected to be greater than model resolution '%d'", *argModelFrequency, *argModelResolution)
+	}
+	if (len(*argTLSCertFile) > 0 && len(*argTLSKeyFile) == 0) || (len(*argTLSCertFile) == 0 && len(*argTLSKeyFile) > 0) {
+		return fmt.Errorf("both TLS certificate & key are required to enable TLS serving")
+	}
+	if len(*argTLSClientCAFile) > 0 && len(*argTLSCertFile) == 0 {
+		return fmt.Errorf("client cert authentication requires TLS certificate & key")
+	}
 	return nil
 }
 
 func doWork() ([]source_api.Source, sinks.ExternalSinkManager, manager.Manager, error) {
-	sources, err := newSources()
+	c := cache.NewCache(*argCacheDuration, time.Minute)
+	sources, err := newSources(c)
 	if err != nil {
-		return nil, nil, nil, err
+		// Do not fail heapster is source setup fails for any reason.
+		glog.Errorf("failed to setup sinks - %v", err)
 	}
-	sinkManager, err := sinks.NewExternalSinkManager(nil)
+	sinkManager, err := sinks.NewExternalSinkManager(nil, c, *argSinkFrequency)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-	manager, err := manager.NewManager(sources, sinkManager, *argStatsResolution, *argCacheDuration, *argUseModel, *argModelResolution, *argAlignStats)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if err := manager.SetSinkUris(argSinks); err != nil {
 		return nil, nil, nil, err
 	}
 
 	// Spawn the Model Housekeeping goroutine even if the model is not enabled.
 	// This will allow the model to be activated/deactivated in runtime.
-	modelDuration := 2 * *argModelResolution
+	modelDuration := *argModelFrequency
 	if (*argCacheDuration).Nanoseconds() < modelDuration.Nanoseconds() {
 		modelDuration = *argCacheDuration
 	}
-	go util.Until(manager.HousekeepModel, modelDuration, util.NeverStop)
 
-	go util.Until(manager.Housekeep, *argPollDuration, util.NeverStop)
+	manager, err := manager.NewManager(sources, sinkManager, *argStatsResolution, *argCacheDuration, c, *argUseModel, *argModelResolution,
+		modelDuration)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := manager.SetSinkUris(argSinks); err != nil {
+		// Do not fail heapster is sink setup fails for any reason.
+		glog.Errorf("failed to setup sinks - %v", err)
+	}
+
+	manager.Start()
 	return sources, sinkManager, manager, nil
 }
 

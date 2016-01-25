@@ -19,12 +19,13 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/extpoints"
-	"github.com/GoogleCloudPlatform/heapster/sinks/gcm"
 	"github.com/golang/glog"
+	"k8s.io/heapster/extpoints"
+	"k8s.io/heapster/sinks/cache"
+	"k8s.io/heapster/sinks/gcm"
 
-	sink_api "github.com/GoogleCloudPlatform/heapster/sinks/api/v1"
-	kube_api "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
+	sink_api "k8s.io/heapster/sinks/api"
+	kube_api "k8s.io/kubernetes/pkg/api"
 )
 
 var (
@@ -40,10 +41,12 @@ var (
 		Key:         "compute.googleapis.com/resource_type",
 		Description: "Resource types for nodes specific for GCE.",
 	}
-	cpuUsage = "cpu/usage"
-	cpuLimit = "cpu/limit"
-	memUsage = "memory/usage"
-	memLimit = "memory/limit"
+	cpuUsage   = "cpu/usage"
+	cpuLimit   = "cpu/limit"
+	cpuRequest = "cpu/request"
+	memUsage   = "memory/usage"
+	memLimit   = "memory/limit"
+	memRequest = "memory/request"
 )
 
 var autoscalingLabels = []sink_api.LabelDescriptor{
@@ -83,7 +86,8 @@ type hostTime struct {
 }
 
 type gcmAutocalingSink struct {
-	core *gcm.GcmCore
+	core       *gcm.GcmCore
+	resolution time.Duration
 	// For given hostname and time remembers its cpu capacity in milicores.
 	cpuCapacity map[hostTime]int64
 	// For given hostname and time remembers amount of reserved cpu in milicores.
@@ -92,6 +96,10 @@ type gcmAutocalingSink struct {
 	memCapacity map[hostTime]int64
 	// For given hostname and time remembers amount of reserved memory in bytes.
 	memReservation map[hostTime]int64
+}
+
+func (self gcmAutocalingSink) hostTime(host string, metric *sink_api.Point) hostTime {
+	return hostTime{host, metric.End.Truncate(self.resolution)}
 }
 
 // Adds the specified metrics or updates them if they already exist.
@@ -120,7 +128,7 @@ func (self gcmAutocalingSink) StoreEvents([]kube_api.Event) error {
 }
 
 func isNode(metric *sink_api.Point) bool {
-	return metric.Labels[sink_api.LabelContainerName.Key] == "/"
+	return metric.Labels[sink_api.LabelContainerName.Key] == cache.NodeContainerName
 }
 
 func isPodContainer(metric *sink_api.Point) bool {
@@ -134,7 +142,7 @@ func (self *gcmAutocalingSink) updateMachineCapacityAndReservation(input []sink_
 	self.memReservation = make(map[hostTime]int64)
 	for _, entry := range input {
 		metric := entry.Point
-		if metric.Name != cpuLimit && metric.Name != memLimit {
+		if metric.Name != cpuLimit && metric.Name != memLimit && metric.Name != cpuRequest && metric.Name != memRequest {
 			continue
 		}
 		host := metric.Labels[sink_api.LabelHostname.Key]
@@ -145,15 +153,15 @@ func (self *gcmAutocalingSink) updateMachineCapacityAndReservation(input []sink_
 
 		if isNode(metric) {
 			if metric.Name == cpuLimit {
-				self.cpuCapacity[hostTime{host, metric.End}] = value
+				self.cpuCapacity[self.hostTime(host, metric)] = value
 			} else if metric.Name == memLimit {
-				self.memCapacity[hostTime{host, metric.End}] = value
+				self.memCapacity[self.hostTime(host, metric)] = value
 			}
 		} else if isPodContainer(metric) {
-			if metric.Name == cpuLimit {
-				self.cpuReservation[hostTime{host, metric.End}] += value
-			} else if metric.Name == memLimit {
-				self.memReservation[hostTime{host, metric.End}] += value
+			if metric.Name == cpuRequest {
+				self.cpuReservation[self.hostTime(host, metric)] += value
+			} else if metric.Name == memRequest {
+				self.memReservation[self.hostTime(host, metric)] += value
 			}
 		}
 	}
@@ -177,27 +185,27 @@ func (self *gcmAutocalingSink) getNewValue(metric *sink_api.Point, ts *gcm.Times
 	var val float64
 	switch metric.Name {
 	case cpuUsage:
-		capacity, ok := self.cpuCapacity[hostTime{host, metric.End}]
+		capacity, ok := self.cpuCapacity[self.hostTime(host, metric)]
 		if !ok || capacity < 1 || ts.Point.DoubleValue == nil {
 			return nil
 		}
 		val = *ts.Point.DoubleValue / float64(capacity)
 	case cpuLimit:
-		reserved, ok := self.cpuReservation[hostTime{host, metric.End}]
-		capacity, ok2 := self.cpuCapacity[hostTime{host, metric.End}]
+		reserved, ok := self.cpuReservation[self.hostTime(host, metric)]
+		capacity, ok2 := self.cpuCapacity[self.hostTime(host, metric)]
 		if !ok || !ok2 || capacity < 1 {
 			return nil
 		}
 		val = float64(reserved) / float64(capacity)
 	case memUsage:
-		capacity, ok := self.memCapacity[hostTime{host, metric.End}]
+		capacity, ok := self.memCapacity[self.hostTime(host, metric)]
 		if !ok || capacity < 1 || ts.Point.Int64Value == nil {
 			return nil
 		}
 		val = float64(*ts.Point.Int64Value) / float64(capacity)
 	case memLimit:
-		reserved, ok := self.memReservation[hostTime{host, metric.End}]
-		capacity, ok2 := self.memCapacity[hostTime{host, metric.End}]
+		reserved, ok := self.memReservation[self.hostTime(host, metric)]
+		capacity, ok2 := self.memCapacity[self.hostTime(host, metric)]
 		if !ok || !ok2 || capacity < 1 {
 			return nil
 		}
@@ -231,13 +239,13 @@ func (self gcmAutocalingSink) StoreTimeseries(input []sink_api.Timeseries) error
 			continue
 		}
 		if err != nil || ts == nil {
-			glog.Infof("Failed to create Timeseries for metric %v, host %v. Error %v.", autoscalingMetrics[metric.Name].name, metric.Labels[sink_api.LabelHostname.Key], err)
+			glog.Errorf("Failed to create Timeseries for metric %v, host %v. Error %v.", autoscalingMetrics[metric.Name].name, metric.Labels[sink_api.LabelHostname.Key], err)
 			continue
 		}
 
 		val := self.getNewValue(metric, ts)
 		if val == nil {
-			glog.Infof("Failed to compute new value for metric %v, host %v.", autoscalingMetrics[metric.Name].name, metric.Labels[sink_api.LabelHostname.Key])
+			glog.Errorf("Failed to compute new value for metric %v, host %v.", autoscalingMetrics[metric.Name].name, metric.Labels[sink_api.LabelHostname.Key])
 			continue
 		}
 		ts.Point.Int64Value = nil
@@ -261,15 +269,18 @@ func (self gcmAutocalingSink) Name() string {
 }
 
 func init() {
-	extpoints.SinkFactories.Register(CreateGCMScalingSink, "gcmautoscaling")
+	extpoints.SinkFactories.Register(CreateGCMAutoscalingSink, "gcmautoscaling")
 }
 
-func CreateGCMScalingSink(uri *url.URL) ([]sink_api.ExternalSink, error) {
+func CreateGCMAutoscalingSink(uri *url.URL, conf extpoints.HeapsterConf) ([]sink_api.ExternalSink, error) {
 	if *uri != (url.URL{}) {
 		return nil, fmt.Errorf("gcmautoscaling sinks don't take arguments")
 	}
 	core, err := gcm.NewCore()
-	sink := gcmAutocalingSink{core: core}
+	sink := gcmAutocalingSink{
+		core:       core,
+		resolution: conf.StatsResolution,
+	}
 	glog.Infof("created GCM Autocaling sink")
 	return []sink_api.ExternalSink{sink}, err
 }

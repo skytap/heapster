@@ -18,12 +18,13 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"time"
 
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/api"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/client"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/client/cache"
-	"github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
 	"github.com/golang/glog"
+	api "k8s.io/kubernetes/pkg/api"
+	"k8s.io/kubernetes/pkg/client/cache"
+	client "k8s.io/kubernetes/pkg/client/unversioned"
+	"k8s.io/kubernetes/pkg/fields"
 )
 
 type kubeNodes struct {
@@ -96,6 +97,15 @@ func (self *kubeNodes) getNodeInfoAndHostname(node api.Node) (Info, string, erro
 	mem := node.Status.Capacity[api.ResourceMemory]
 	nodeInfo.CpuCapacity = uint64(cpu.MilliValue())
 	nodeInfo.MemCapacity = uint64(mem.Value())
+
+	for _, condition := range node.Status.Conditions {
+		if condition.Type == api.NodeReady {
+			if condition.Status != api.ConditionTrue {
+				nodeErr = fmt.Errorf("The state of node is not Ready!")
+			}
+		}
+	}
+
 	return nodeInfo, hostname, nodeErr
 }
 
@@ -111,9 +121,8 @@ func (self *kubeNodes) List() (*NodeList, error) {
 	goodNodes := []string{}
 	for _, node := range allNodes.Items {
 		nodeInfo, hostname, err := self.getNodeInfoAndHostname(node)
-
-		nodeList.Items[Host(hostname)] = nodeInfo
 		if err == nil {
+			nodeList.Items[Host(hostname)] = nodeInfo
 			goodNodes = append(goodNodes, node.Name)
 		}
 	}
@@ -153,7 +162,7 @@ func NewKubeNodes(client *client.Client) (NodesApi, error) {
 
 	lw := cache.NewListWatchFromClient(client, "nodes", api.NamespaceAll, fields.Everything())
 	nodeLister := &cache.StoreToNodeLister{Store: cache.NewStore(cache.MetaNamespaceKeyFunc)}
-	reflector := cache.NewReflector(lw, &api.Node{}, nodeLister.Store, 0)
+	reflector := cache.NewReflector(lw, &api.Node{}, nodeLister.Store, time.Hour)
 	stopChan := make(chan struct{})
 	reflector.RunUntil(stopChan)
 

@@ -17,8 +17,8 @@ package cache
 import (
 	"time"
 
-	source_api "github.com/GoogleCloudPlatform/heapster/sources/api"
-	cadvisor_api "github.com/google/cadvisor/info/v1"
+	source_api "k8s.io/heapster/sources/api"
+	kube_api "k8s.io/kubernetes/pkg/api"
 )
 
 type Metadata struct {
@@ -29,15 +29,28 @@ type Metadata struct {
 	Hostname     string
 	Labels       map[string]string
 	ExternalID   string
+	LastUpdate   time.Time
+}
+
+type Event struct {
+	Metadata
+	// Detailed description of the event.
+	Message string
+	// The source component that generated the event.
+	Source string
+	// Store a public API version instead of internal version.
+	Raw kube_api.Event
 }
 
 type ContainerMetricElement struct {
-	Spec  *cadvisor_api.ContainerSpec
-	Stats *cadvisor_api.ContainerStats
+	Spec  *source_api.ContainerSpec
+	Stats *source_api.ContainerStats
 }
 
 type ContainerElement struct {
 	Metadata
+	// Container base image.
+	Image string
 	// Data points are in reverse chronological order (most recent to oldest).
 	Metrics []*ContainerMetricElement
 }
@@ -52,25 +65,47 @@ type PodElement struct {
 // NodeContainerName is the container name assigned to node level metrics.
 const NodeContainerName = "machine"
 
+type EventsCache interface {
+	StoreEvents([]*Event) error
+}
+
+type CacheListener struct {
+	NodeEvicted          func(hostName string)
+	NamespaceEvicted     func(namespace string)
+	PodEvicted           func(namespace string, podName string)
+	PodContainerEvicted  func(namespace string, podName string, containerName string)
+	FreeContainerEvicted func(hostName string, containerName string)
+}
+
 type Cache interface {
+	EventsCache
 	StorePods([]source_api.Pod) error
 	StoreContainers([]source_api.Container) error
 	// TODO: Handle events.
-	// GetPods returns a list of pod elements in the cache between 'start' and 'end'.
+	// GetPods returns a list of pod elements holding the metrics between 'start' and 'end' in the cache.
 	// If 'start' is zero, it returns all the elements up until 'end'.
 	// If 'end' is zero, it returns all the elements from 'start'.
 	// If both 'start' and 'end' are zero, it returns all the elements in the cache.
 	GetPods(start, end time.Time) []*PodElement
 
-	// GetNodes returns a list of pod elements in the cache between 'start' and 'end'.
+	// GetNodes returns a list of container elements holding the node level metrics between 'start' and 'end' in the cache.
 	// If 'start' is zero, it returns all the elements up until 'end'.
 	// If 'end' is zero, it returns all the elements from 'start'.
 	// If both 'start' and 'end' are zero, it returns all the elements in the cache.
 	GetNodes(start, end time.Time) []*ContainerElement
 
-	// GetFreeContainers returns a list of pod elements in the cache between 'start' and 'end'.
+	// GetFreeContainers returns a list of container elements holding the metrics between 'start' and 'end' in the cache.
 	// If 'start' is zero, it returns all the elements up until 'end'.
 	// If 'end' is zero, it returns all the elements from 'start'.
 	// If both 'start' and 'end' are zero, it returns all the elements in the cache.
 	GetFreeContainers(start, end time.Time) []*ContainerElement
+	// GetEvents returns a list of events in the cache between 'start' and 'end.
+	// If 'start' is zero, it returns all the events up until 'end'.
+	// If 'end' is zero, it returns all the events from 'start'.
+	// If both 'start' and 'end' are zero, it returns all the events in the cache.
+	GetEvents(start, end time.Time) []*Event
+
+	// Adds eviction listener to the list of listeners. The listeners
+	// will be triggered when the correspoinding eviction events occur.
+	AddCacheListener(listener CacheListener)
 }

@@ -19,16 +19,21 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/GoogleCloudPlatform/heapster/sources/api"
-	kubeapi "github.com/GoogleCloudPlatform/kubernetes/pkg/api"
-	kubeclient "github.com/GoogleCloudPlatform/kubernetes/pkg/client"
-	kubefields "github.com/GoogleCloudPlatform/kubernetes/pkg/fields"
-	kubelabels "github.com/GoogleCloudPlatform/kubernetes/pkg/labels"
-	kubewatch "github.com/GoogleCloudPlatform/kubernetes/pkg/watch"
 	"github.com/golang/glog"
+	"k8s.io/heapster/sinks/cache"
+	"k8s.io/heapster/sources/api"
+	kubeapi "k8s.io/kubernetes/pkg/api"
+	kubeapiunv "k8s.io/kubernetes/pkg/api/unversioned"
+	kubeclient "k8s.io/kubernetes/pkg/client/unversioned"
+	kubefields "k8s.io/kubernetes/pkg/fields"
+	kubelabels "k8s.io/kubernetes/pkg/labels"
+	kubewatch "k8s.io/kubernetes/pkg/watch"
 )
 
-const kubeEventsSource = "kube-events"
+const (
+	kubeEventsSourceType = "kube-events"
+	KubeEventsSourceName = "Kube Events Source"
+)
 
 // eventsUpdate is the wrapper object used to pass new events around
 type eventsUpdate struct {
@@ -41,6 +46,7 @@ type eventsSourceImpl struct {
 	eventsChannel chan eventsUpdate
 	errorChannel  chan error
 	initialized   bool
+	ec            cache.EventsCache
 }
 
 // Terminates existing watch loop, if any, and starts new instance
@@ -50,7 +56,7 @@ func (eventSource *eventsSourceImpl) restartWatchLoop() {
 	eventSource.eventsChannel = make(chan eventsUpdate, 1024)
 	eventSource.errorChannel = make(chan error)
 	glog.V(4).Infof("Restarting event source")
-	go watchLoop(eventSource.Client.Events(kubeapi.NamespaceAll), eventSource.eventsChannel, eventSource.errorChannel)
+	go eventSource.watchLoop(eventSource.Client.Events(kubeapi.NamespaceAll), eventSource.eventsChannel, eventSource.errorChannel)
 	glog.V(4).Infof("Finished restarting event source")
 }
 
@@ -87,8 +93,33 @@ UpdateLoop:
 	return events, false, nil
 }
 
+func (eventSource *eventsSourceImpl) storeEventsInCache(events *kubeapi.EventList) error {
+	var internalEvents []*cache.Event
+	for _, event := range events.Items {
+		if string(event.Name) == "" {
+			glog.Errorf("Dropping kubernetes event. Name is missing: %+v", event)
+			continue
+		}
+		internalEvents = append(internalEvents,
+			&cache.Event{
+				Metadata: cache.Metadata{
+					Name:       event.Reason,
+					Namespace:  event.Namespace,
+					UID:        string(event.Name),
+					Labels:     event.Labels,
+					Hostname:   event.Source.Host,
+					LastUpdate: event.LastTimestamp.Time,
+				},
+				Message: event.Message,
+				Source:  event.Source.Component,
+				Raw:     event,
+			})
+	}
+	return eventSource.ec.StoreEvents(internalEvents)
+}
+
 // watchLoop loops forever looking for new events.  If an error occurs it will close the channel and return.
-func watchLoop(eventClient kubeclient.EventInterface, eventsChan chan<- eventsUpdate, errorChan chan<- error) {
+func (eventSource *eventsSourceImpl) watchLoop(eventClient kubeclient.EventInterface, eventsChan chan<- eventsUpdate, errorChan chan<- error) {
 	defer close(eventsChan)
 	defer close(errorChan)
 	events, err := eventClient.List(kubelabels.Everything(), kubefields.Everything())
@@ -99,6 +130,12 @@ func watchLoop(eventClient kubeclient.EventInterface, eventsChan chan<- eventsUp
 	}
 	resourceVersion := events.ResourceVersion
 	eventsChan <- eventsUpdate{events: events}
+
+	if err := eventSource.storeEventsInCache(events); err != nil {
+		glog.Errorf("failed to store events in cache: %v", err)
+		errorChan <- err
+		return
+	}
 
 	watcher, err := eventClient.Watch(kubelabels.Everything(), kubefields.Everything(), resourceVersion)
 	if err != nil {
@@ -118,7 +155,7 @@ func watchLoop(eventClient kubeclient.EventInterface, eventsChan chan<- eventsUp
 		}
 
 		if watchUpdate.Type == kubewatch.Error {
-			if status, ok := watchUpdate.Object.(*kubeapi.Status); ok {
+			if status, ok := watchUpdate.Object.(*kubeapiunv.Status); ok {
 				err := fmt.Errorf("Error during watch: %#v", status)
 				errorChan <- err
 				return
@@ -132,7 +169,13 @@ func watchLoop(eventClient kubeclient.EventInterface, eventsChan chan<- eventsUp
 
 			switch watchUpdate.Type {
 			case kubewatch.Added, kubewatch.Modified:
-				eventsChan <- eventsUpdate{&kubeapi.EventList{Items: []kubeapi.Event{*event}}}
+				eList := &kubeapi.EventList{Items: []kubeapi.Event{*event}}
+				eventsChan <- eventsUpdate{eList}
+				if err := eventSource.storeEventsInCache(eList); err != nil {
+					glog.Errorf("failed to store events in cache: %v", err)
+					errorChan <- err
+					return
+				}
 			case kubewatch.Deleted:
 				// Deleted events are silently ignored
 			default:
@@ -146,22 +189,22 @@ func watchLoop(eventClient kubeclient.EventInterface, eventsChan chan<- eventsUp
 	}
 }
 
-func NewKubeEvents(client *kubeclient.Client) api.Source {
+func NewKubeEvents(client *kubeclient.Client, ec cache.EventsCache) api.Source {
 	// Buffered channel to send/receive events from
 	eventsChan := make(chan eventsUpdate, 1024)
 	errorChan := make(chan error)
-	glog.V(4).Infof("Starting %q source", kubeEventsSource)
-	go watchLoop(client.Events(kubeapi.NamespaceAll), eventsChan, errorChan)
-	glog.V(4).Infof("Finished starting %q source", kubeEventsSource)
-
-	return &eventsSourceImpl{
+	es := &eventsSourceImpl{
 		Client:        client,
 		eventsChannel: eventsChan,
 		errorChannel:  errorChan,
+		ec:            ec,
 	}
+	go es.watchLoop(client.Events(kubeapi.NamespaceAll), eventsChan, errorChan)
+	// TODO: Inject Namespace Store in here to get namespace IDs for events.
+	return es
 }
 
-func (eventSource *eventsSourceImpl) GetInfo(start, end time.Time, resolution time.Duration, align bool) (api.AggregateData, error) {
+func (eventSource *eventsSourceImpl) GetInfo(start, end time.Time) (api.AggregateData, error) {
 	events, watchLoopTerminated, err := eventSource.getEvents()
 	if err != nil {
 		if watchLoopTerminated {
@@ -177,11 +220,11 @@ func (eventSource *eventsSourceImpl) GetInfo(start, end time.Time, resolution ti
 }
 
 func (eventSource *eventsSourceImpl) DebugInfo() string {
-	desc := fmt.Sprintf("Source type: %s\n", kubeEventsSource)
+	desc := fmt.Sprintf("Source type: %s\n", kubeEventsSourceType)
 	// TODO: Add events specific debug information
 	return desc
 }
 
 func (eventsSource *eventsSourceImpl) Name() string {
-	return kubeEventsSource
+	return KubeEventsSourceName
 }
