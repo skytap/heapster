@@ -253,6 +253,10 @@
 			"Rev": "5a13a75b13d132dc7d07dd19fd260257cd9c0290"
 		},
 		{
+			"ImportPath": "github.com/skytap/go-rrdcached",
+			"Rev": "417a76618ed1b4b99404be90b4466b76f167dad6"
+		},
+		{
 			"ImportPath": "github.com/stretchr/testify/assert",
 			"Rev": "2160c81a963bc827f650a9d420263d05d35bb97e"
 		},

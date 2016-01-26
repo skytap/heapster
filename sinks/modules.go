@@ -23,4 +23,5 @@ import (
 	_ "k8s.io/heapster/sinks/kafka"
 	_ "k8s.io/heapster/sinks/opentsdb"
 	_ "k8s.io/heapster/sinks/riemann"
+	_ "k8s.io/heapster/sinks/rrdcached"
 )
