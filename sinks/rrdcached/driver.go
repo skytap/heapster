@@ -195,6 +195,16 @@ func (self *rrdcachedSink) StoreTimeseries(timeseries []sink_api.Timeseries) err
 
 		if err := self.writeData(filename, desc.Type.String(), point.End.Unix(), point.Value); err != nil {
 			glog.Error(err)
+			if _, ok := err.(*rrdcached.ConnectionError); ok {
+				host, port := self.c.splitHostAndPort()
+				var connectErr error
+				glog.Errorf("Connection error to %v:%v, reconnecting...", host, port)
+				self.client, connectErr = rrdcached.ConnectToIP(host, port)
+				if connectErr != nil {
+					glog.Error(connectErr)
+					break
+				}
+			}
 			continue
 		}
 	}
@@ -219,29 +229,52 @@ func (self *rrdcachedSink) getAppropriateRRA() []string {
 		"RRA:MIN:0.5:1:244", "RRA:MIN:0.5:24:7320", "RRA:MIN:0.5:168:1030", "RRA:MIN:0.5:672:1543", "RRA:MIN:0.5:5760:374"}
 }
 
-func (self *rrdcachedSink) writeData(filename string, dataType string, timestamp int64, value interface{}) error {
+func (self *rrdcachedSink) writeDataUpdate(filename string, timestamp int64, value interface{}) error {
 	formattedValue := fmt.Sprintf("%v:%v", timestamp, value)
+	resp, err := self.client.Update(filename, formattedValue)
+	if err != nil {
+		return err
+	}
+	if resp.Status != 0 {
+		return fmt.Errorf("RRD UPDATE failed: %v, value %v, error %v", filename, value, resp.Raw)
+	}
+	return nil
+}
 
+func (self *rrdcachedSink) writeDataCreate(filename string, timestamp int64, dataType string) error {
+	ds := self.getAppropriateDS(dataType)
+	if ds == nil {
+		return fmt.Errorf("RRD CREATE failed: %v, unrecognized data type '%v'", filename, dataType)
+	}
+	rra := self.getAppropriateRRA()
+	resp, err := self.client.Create(filename, timestamp, self.c.step, true, ds, rra)
+	if err != nil {
+		return err
+	}
+	if resp.Status != 0 {
+		return fmt.Errorf("RRD CREATE failed: %v, error %v", filename, resp.Raw)
+	}
+	return nil
+}
+
+func (self *rrdcachedSink) writeData(filename string, dataType string, timestamp int64, value interface{}) error {
 	// Rather than attempting to check whether the RRD exists already, instead simply attempt to UPDATE,
 	//   then if error check for type FileDoesNotExistError, in which case CREATE and re-UPDATE.
-	updateResp, updateErr := self.client.Update(filename, formattedValue)
-	if updateErr != nil {
-		if _, ok := updateErr.(*rrdcached.FileDoesNotExistError); ok {
-			ds := self.getAppropriateDS(dataType)
-			if ds == nil {
-				return fmt.Errorf("RRD CREATE failed: %v, unrecognized data type '%v'", filename, dataType)
+
+	if err := self.writeDataUpdate(filename, timestamp, value); err != nil {
+		if _, ok := err.(*rrdcached.FileDoesNotExistError); ok {
+
+			// If FileDoesNotExist, then create and retry update.
+			if err2 := self.writeDataCreate(filename, timestamp, dataType); err2 != nil {
+				return err2
 			}
-			rra := self.getAppropriateRRA()
-			createResp, _ := self.client.Create(filename, timestamp, self.c.step, true, ds, rra)
-			if createResp.Status != 0 {
-				return fmt.Errorf("RRD CREATE failed: %v, error %v", filename, createResp.Raw)
+			if err3 := self.writeDataUpdate(filename, timestamp, value); err3 != nil {
+				return err3
 			}
 
+		} else {
+			return err
 		}
-		updateResp, updateErr = self.client.Update(filename, formattedValue)
-	}
-	if updateResp.Status != 0 {
-		return fmt.Errorf("RRD UPDATE failed: %v, value %v, error %v", filename, value, updateResp.Raw)
 	}
 	return nil
 }
@@ -264,15 +297,24 @@ func (self *rrdcachedSink) Name() string {
 func new(c config) (sink_api.ExternalSink, error) {
 	glog.Infof("Using rrdcached with config: %q", c)
 
-	host_and_port := strings.Split(c.host, ":")
-	host := host_and_port[0]
-	port, _ := strconv.ParseInt(host_and_port[1], 10, 64)
-	client := rrdcached.ConnectToIP(host, port)
+	host, port := c.splitHostAndPort()
+	client, err := rrdcached.ConnectToIP(host, port)
+	if err != nil {
+		glog.Error(err)
+	}
 
 	return &rrdcachedSink{
 		client: client,
 		c:      c,
 	}, nil
+}
+
+// Splits standard "host" (eg "1.2.3.4:5678") into host and port (eg "1.2.3.4", 5678)
+func (c *config) splitHostAndPort() (string, int64) {
+	host_and_port := strings.Split(c.host, ":")
+	host := host_and_port[0]
+	port, _ := strconv.ParseInt(host_and_port[1], 10, 64)
+	return host, port
 }
 
 func init() {
